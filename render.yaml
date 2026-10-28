@@ -1,0 +1,17 @@
+# Render Blueprint: Render reads this file and sets up the server by itself.
+# The database lives on Neon (free and permanent); paste its link as DATABASE_URL.
+services:
+  - type: web
+    name: wordcards
+    runtime: python
+    plan: free
+    buildCommand: pip install -r backend/requirements.txt
+    startCommand: cd backend && uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/health
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.7"
+      - key: SECRET_KEY
+        generateValue: true
+      - key: DATABASE_URL
+        sync: false
