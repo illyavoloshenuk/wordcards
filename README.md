@@ -39,17 +39,24 @@ The logic is in [`backend/app/srs.py`](backend/app/srs.py) and covered by tests.
 ```
  phone                                        server
  ─────                                        ──────
- IndexedDB: full copy of folders and words
- every change ──► applied locally at once
-              └─► queued in the "outbox"
+ IndexedDB:
+   base   = copy confirmed by the server
+   outbox = changes not sent yet
+   view   = base + outbox  (what the screens show)
+
+ every change ──► applied to view at once, queued in outbox
                          │  when online
                          ▼
-                   POST /api/sync {ops: [...]} ──► applied in order
-                                                   (each op has an id, repeats are skipped)
- local copy  ◄──────────── full fresh state ◄────┘
- + changes made while waiting are replayed on top
+   POST /api/sync {ops, since: cursor} ──► applied in order
+                                           (each op has an id, repeats are skipped)
+   base ◄── only rows changed since cursor ◄─┘
+            + uids of deleted rows, new cursor
 ```
 
+- **Incremental:** after the first sync only changed rows travel (one answer ≈ 0.6 KB instead of the
+  whole word list), and responses are gzipped. Deletions are kept as small records so other devices learn about them.
+- **No polling:** sync runs after a change, when the app opens and when the internet returns — never on
+  a timer — so the free serverless database can scale to zero between sessions.
 - Folders and words get a UUID created on the phone, so they can be made offline.
 - Each review carries the time it happened, so the server schedules it exactly as the phone did.
 - The same logic exists twice — [`frontend/logic.js`](frontend/logic.js) and the Python backend — and both are tested with the same cases.

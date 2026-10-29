@@ -39,6 +39,8 @@ class Deck(Base):
     # BCP-47 code used for pronunciation in the browser, e.g. "de-DE".
     lang_code: Mapped[str | None] = mapped_column(String(16), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    # Changes on every edit, so sync can send only what changed (see routers/sync.py).
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime, default=utcnow, onupdate=utcnow, index=True)
 
     owner: Mapped[User] = relationship(back_populates="decks")
     cards: Mapped[list["Card"]] = relationship(
@@ -67,6 +69,7 @@ class Card(Base):
     times_correct: Mapped[int] = mapped_column(Integer, default=0)
     times_wrong: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime, default=utcnow, onupdate=utcnow, index=True)
 
     deck: Mapped[Deck] = relationship(back_populates="cards")
 
@@ -85,3 +88,24 @@ class AppliedOp(Base):
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
     op_id: Mapped[str] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+
+
+class Deletion(Base):
+    """A note that a folder or word was deleted.
+
+    Sync sends only what changed; for deleted things there is no row left,
+    so this note tells the other devices to remove them too.
+    """
+
+    __tablename__ = "deletions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    kind: Mapped[str] = mapped_column(String(8))  # "deck" or "card"
+    uid: Mapped[str] = mapped_column(String(36))
+    deleted_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+
+
+def record_deletion(db, user_id: int, kind: str, uid: str | None) -> None:
+    if uid:
+        db.add(Deletion(user_id=user_id, kind=kind, uid=uid))

@@ -84,3 +84,33 @@ test("study: due cards come forgotten first, then learning, then new", () => {
 test("uuid looks like a uuid", () => {
   assert.match(WC.uuid(), /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
 });
+
+test("mergeChanges: only changes are merged, deletions remove", () => {
+  const card = (uid, deck_uid, back) => ({ uid, deck_uid, front: uid, back, created_at: AT });
+  const base = {
+    decks: [{ uid: "d1", created_at: AT }, { uid: "d2", created_at: AT }],
+    cards: [card("a", "d1", "1"), card("b", "d1", "2"), card("c", "d2", "3")],
+  };
+  const merged = WC.mergeChanges(base, {
+    full: false,
+    decks: [],
+    cards: [card("a", "d1", "new"), card("n", "d1", "4")],
+    deleted_decks: ["d2"],
+    deleted_cards: ["b"],
+  });
+  assert.deepEqual(merged.decks.map((d) => d.uid), ["d1"]);
+  assert.deepEqual(merged.cards.map((c) => [c.uid, c.back]), [["a", "new"], ["n", "4"]]); // c left with its folder
+
+  const full = WC.mergeChanges(base, { full: true, decks: [], cards: [] });
+  assert.deepEqual(full, { decks: [], cards: [] });
+});
+
+test("withPending: a waiting answer is counted once, not twice", () => {
+  const base = { decks: [{ uid: "d", created_at: AT }], cards: [{ uid: "a", deck_uid: "d", box: 1, status: "learning", due_at: AT, times_correct: 1, times_wrong: 0, created_at: AT }] };
+  const outbox = [{ type: "card_review", uid: "a", known: true, at: AT }];
+  const view1 = WC.withPending(base, outbox);
+  const view2 = WC.withPending(base, outbox); // rebuilt again after a sync that didn't touch "a"
+  assert.equal(view1.cards[0].box, 2);
+  assert.equal(view2.cards[0].box, 2);
+  assert.equal(base.cards[0].box, 1); // the confirmed copy is left untouched
+});

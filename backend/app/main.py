@@ -2,6 +2,7 @@
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import inspect, text
 
@@ -26,6 +27,15 @@ def add_missing_columns() -> None:
                 col_type = column.type.compile(engine.dialect)
                 with engine.begin() as conn:
                     conn.execute(text(f'ALTER TABLE "{table.name}" ADD COLUMN "{column.name}" {col_type}'))
+                if column.index and column.name != "uid":
+                    with engine.begin() as conn:
+                        conn.execute(
+                            text(f'CREATE INDEX IF NOT EXISTS "ix_{table.name}_{column.name}" ON "{table.name}" ({column.name})')
+                        )
+                if column.name == "updated_at":
+                    source = "created_at" if "created_at" in existing else "CURRENT_TIMESTAMP"
+                    with engine.begin() as conn:
+                        conn.execute(text(f'UPDATE "{table.name}" SET updated_at = {source} WHERE updated_at IS NULL'))
                 if column.name == "uid":
                     fill_uids(table.name)
                     with engine.begin() as conn:
@@ -49,7 +59,8 @@ async def lifespan(_: FastAPI):
     yield
 
 
-app = FastAPI(title="WordCards API", version="1.0.0", lifespan=lifespan)
+app = FastAPI(title="WordCards API", version="1.1.0", lifespan=lifespan)
+app.add_middleware(GZipMiddleware, minimum_size=1000)  # word lists compress ~5x
 
 for router in (auth.router, decks.router, cards.router, sync.router):
     app.include_router(router, prefix="/api")

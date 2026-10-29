@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 
 from .. import srs
 from ..database import get_db
-from ..models import Card, Deck, User
+from ..models import Card, Deck, User, record_deletion
 from ..schemas import BulkIn, BulkOut, CardIn, CardOut, DeckIn, DeckOut, DeckStats, StudyMode
 from ..security import get_current_user
 from ..timeutil import utcnow
@@ -84,7 +84,9 @@ def update_deck(
 
 @router.delete("/{deck_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_deck(deck_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    db.delete(get_own_deck(deck_id, user, db))
+    deck = get_own_deck(deck_id, user, db)
+    record_deletion(db, user.id, "deck", deck.uid)
+    db.delete(deck)
     db.commit()
 
 

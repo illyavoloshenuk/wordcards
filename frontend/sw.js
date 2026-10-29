@@ -1,7 +1,7 @@
 // Service worker: keeps the app itself on the phone, so it opens instantly
 // and works without internet. The words are kept separately (IndexedDB, see
 // app.js); API calls are never cached here.
-const CACHE = "wordcards-v2";
+const CACHE = "wordcards-v3";
 const SHELL = [
   "./",
   "index.html",

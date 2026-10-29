@@ -128,7 +128,7 @@ def test_old_database_gets_new_column(tmp_path, monkeypatch):
 
     con = sqlite3.connect(path)
     cols = {row[1] for row in con.execute("PRAGMA table_info(cards)")}
-    assert {"example_translation", "uid"} <= cols
+    assert {"example_translation", "uid", "updated_at"} <= cols
     front, card_uid = con.execute("SELECT front, uid FROM cards").fetchone()
     assert front == "Hund" and len(card_uid) == 36
     con.close()

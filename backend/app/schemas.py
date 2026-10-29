@@ -127,6 +127,8 @@ class SyncOp(BaseModel):
 
 class SyncIn(BaseModel):
     ops: list[SyncOp] = Field(default_factory=list, max_length=2000)
+    # The "cursor" from the previous sync. Empty = send everything.
+    since: datetime | None = None
 
 
 class SyncDeck(BaseModel):
@@ -157,7 +159,10 @@ class RejectedOp(BaseModel):
 
 
 class SyncOut(BaseModel):
+    full: bool  # true = this is everything, replace the local copy; false = only changes
     decks: list[SyncDeck]
     cards: list[SyncCard]
+    deleted_decks: list[str]
+    deleted_cards: list[str]
     rejected: list[RejectedOp]
-    server_time: str
+    cursor: str  # send it back as "since" next time

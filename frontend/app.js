@@ -1,9 +1,13 @@
 /* WordCards frontend — plain JavaScript, no build step.
 
-   Offline first: all folders and words live in a copy on this device
-   (IndexedDB). Every change is applied to that copy right away and put
-   into a queue ("outbox"). When the server is reachable, the queue is sent
-   to POST /api/sync and the server answers with the fresh full state.
+   Offline first: all folders and words live on this device (IndexedDB):
+     base    - the copy the server has confirmed
+     outbox  - changes made here that the server hasn't seen yet
+     view    - base + outbox, what the screens show
+   A sync sends the outbox and the "cursor" of the last sync to
+   POST /api/sync; the server answers with only what changed since then.
+   Sync runs when something changes, when the app opens and when the
+   internet comes back - never on a timer, so the free database can sleep.
 
    Screens are switched by the part of the URL after "#":
      #/login                         login / sign up
@@ -21,7 +25,8 @@
 const REQUEUE_GAP = 5;
 const MAX_REPEATS = 3;
 const LESSON_SIZE = 20;
-const SYNC_EVERY_MS = 60_000;
+const SYNC_AFTER_CHANGE_MS = 4000; // gathers the answers of a lesson into one request
+const REFRESH_AFTER_MS = 2 * 60_000; // pull other devices' changes when the app comes back after this
 
 const LANGUAGES = [
   { code: "de-DE", name: "Немецкий", flag: "🇩🇪" },
@@ -154,27 +159,39 @@ const idb = {
   },
 };
 
+const EMPTY = () => ({ user: null, base: { decks: [], cards: [] }, decks: [], cards: [], outbox: [], cursor: null, lastSync: null });
+
 const store = {
-  user: null,
-  decks: [],
-  cards: [],
-  outbox: [], // changes not yet saved on the server
-  lastSync: null,
+  ...EMPTY(),
 
   async load(user) {
     let saved = null;
     try { saved = await idb.get("data"); } catch { /* private mode: work from memory */ }
-    if (saved && saved.user === user) Object.assign(this, saved);
-    else Object.assign(this, { user, decks: [], cards: [], outbox: [], lastSync: null });
+    Object.assign(this, EMPTY(), { user });
+    if (!saved || saved.user !== user) return;
+    if (saved.base) {
+      Object.assign(this, { base: saved.base, outbox: saved.outbox, cursor: saved.cursor, lastSync: saved.lastSync });
+      this.rebuild();
+    } else {
+      // Saved by the first offline version: no confirmed copy yet. Show it as it is;
+      // the cursor stays empty, so the next sync brings everything fresh.
+      Object.assign(this, { base: { decks: saved.decks, cards: saved.cards }, decks: saved.decks, cards: saved.cards, outbox: saved.outbox });
+    }
   },
 
   async save() {
-    const { user, decks, cards, outbox, lastSync } = this;
+    const { user, base, outbox, cursor, lastSync } = this;
     try {
-      await idb.set("data", { user, decks, cards, outbox, lastSync });
+      await idb.set("data", { user, base, outbox, cursor, lastSync });
     } catch {
       toast("Не получилось сохранить на устройстве");
     }
+  },
+
+  rebuild() {
+    const view = WC.withPending(this.base, this.outbox);
+    this.decks = view.decks;
+    this.cards = view.cards;
   },
 
   /** Make changes: apply them here right away and queue them for the server. */
@@ -186,7 +203,7 @@ const store = {
       this.outbox.push(op);
     }
     this.save();
-    scheduleSync(1500);
+    scheduleSync(SYNC_AFTER_CHANGE_MS);
     renderSyncStatus();
   },
 
@@ -207,6 +224,7 @@ const store = {
 let syncing = false;
 let syncTimer = null;
 let syncProblem = null; // null | "offline" | "server"
+let retryDelay = 30_000;
 
 function scheduleSync(delay = 0) {
   clearTimeout(syncTimer);
@@ -218,21 +236,24 @@ async function syncNow() {
   syncing = true;
   renderSyncStatus();
   try {
+    let changed = false;
     do {
       const sending = store.outbox.slice(0, 500);
-      const res = await api("/sync", { method: "POST", body: { ops: sending } });
-      // Changes made while we waited for the answer stay in the queue
-      // and are applied again on top of the fresh state from the server.
+      const res = await api("/sync", { method: "POST", body: { ops: sending, since: store.cursor } });
+      // The sent changes are now part of the server's answer. Changes made
+      // while we waited stay in the queue and are shown on top of it.
       store.outbox.splice(0, sending.length);
-      store.decks = res.decks;
-      store.cards = res.cards;
-      for (const op of store.outbox) WC.applyOp(store, op);
+      store.base = WC.mergeChanges(store.base, res);
+      store.cursor = res.cursor;
+      store.rebuild();
       store.lastSync = new Date().toISOString();
       await store.save();
+      changed ||= res.full || res.decks.length + res.cards.length + res.deleted_decks.length + res.deleted_cards.length > 0;
       if (res.rejected.length) toast(`Сервер не принял ${changesCount(res.rejected.length)}`);
     } while (store.outbox.length);
     syncProblem = null;
-    if (currentView === "home" || currentView === "deck") router();
+    retryDelay = 30_000;
+    if (changed && (currentView === "home" || currentView === "deck")) router();
   } catch (e) {
     if (e.status === 401) {
       // Login expired: keep the words and the queue, just ask to log in again.
@@ -241,6 +262,11 @@ async function syncNow() {
       location.hash = "#/login";
     }
     syncProblem = e.status ? "server" : "offline";
+    // Unsent changes: try again later, waiting longer each time (max 5 min).
+    if (store.outbox.length && auth.token) {
+      scheduleSync(retryDelay);
+      retryDelay = Math.min(retryDelay * 2, 5 * 60_000);
+    }
   } finally {
     syncing = false;
     renderSyncStatus();
@@ -264,8 +290,11 @@ function renderSyncStatus() {
 }
 
 window.addEventListener("online", () => scheduleSync());
-document.addEventListener("visibilitychange", () => { if (!document.hidden) scheduleSync(); });
-setInterval(() => scheduleSync(), SYNC_EVERY_MS);
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) return;
+  const stale = !store.lastSync || Date.now() - Date.parse(store.lastSync) > REFRESH_AFTER_MS;
+  if (store.outbox.length || stale) scheduleSync();
+});
 
 // ---------------- router ----------------
 const routes = [
@@ -412,7 +441,7 @@ function viewHome() {
       : "Выйти из аккаунта?";
     if (!confirm(warning)) return;
     auth.clear();
-    Object.assign(store, { user: null, decks: [], cards: [], outbox: [], lastSync: null });
+    Object.assign(store, EMPTY());
     store.save();
     location.hash = "#/login";
   };

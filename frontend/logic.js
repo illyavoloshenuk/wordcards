@@ -136,6 +136,29 @@
     }
   }
 
+  // ---------- merging what the server sent ----------
+  /** Apply a sync answer to the server-confirmed copy. Returns the new copy. */
+  function mergeChanges(base, res) {
+    if (res.full) return { decks: res.decks, cards: res.cards };
+    const decks = new Map(base.decks.map((d) => [d.uid, d]));
+    const cards = new Map(base.cards.map((c) => [c.uid, c]));
+    for (const d of res.decks) decks.set(d.uid, d);
+    for (const c of res.cards) cards.set(c.uid, c);
+    for (const uid of res.deleted_decks) decks.delete(uid);
+    for (const uid of res.deleted_cards) cards.delete(uid);
+    return {
+      decks: [...decks.values()].sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at)),
+      cards: [...cards.values()].filter((c) => decks.has(c.deck_uid)), // words of deleted folders go too
+    };
+  }
+
+  /** What the user sees: the confirmed copy plus changes still waiting to be sent. */
+  function withPending(base, outbox) {
+    const view = JSON.parse(JSON.stringify(base));
+    for (const op of outbox) applyOp(view, op);
+    return view;
+  }
+
   // ---------- reading ----------
   function deckStats(cards, deckUid, now = Date.now()) {
     const s = { total: 0, new: 0, learning: 0, forgotten: 0, learned: 0, due: 0 };
@@ -190,7 +213,9 @@
     return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
   }
 
-  const api = { review, parseWordList, applyOp, deckStats, studyCards, shuffle, uuid, INTERVAL_DAYS };
+  const api = {
+    review, parseWordList, applyOp, mergeChanges, withPending, deckStats, studyCards, shuffle, uuid, INTERVAL_DAYS,
+  };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.WC = api;
 })(typeof globalThis !== "undefined" ? globalThis : this);
