@@ -1,7 +1,7 @@
 // Service worker: keeps the app itself on the phone, so it opens instantly
 // and works without internet. The words are kept separately (IndexedDB, see
 // app.js); API calls are never cached here.
-const CACHE = "wordcards-v4";
+const CACHE = "wordcards-v5";
 const SHELL = [
   "./",
   "index.html",
@@ -14,7 +14,9 @@ const SHELL = [
 ];
 
 self.addEventListener("install", (event) => {
-  event.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)));
+  // "reload": take the files from the server, not from the browser's own cache,
+  // so a new version never gets stored with old files inside.
+  event.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL.map((u) => new Request(u, { cache: "reload" })))));
   self.skipWaiting();
 });
 
@@ -35,7 +37,7 @@ self.addEventListener("fetch", (event) => {
   event.respondWith(
     caches.open(CACHE).then(async (cache) => {
       const cached = await cache.match(event.request, { ignoreSearch: true });
-      const fresh = fetch(event.request)
+      const fresh = fetch(new Request(event.request.url, { cache: "no-cache", credentials: "same-origin" }))
         .then((res) => {
           if (res.ok) cache.put(event.request, res.clone());
           return res;
