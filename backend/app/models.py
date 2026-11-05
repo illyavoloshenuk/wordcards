@@ -36,6 +36,8 @@ class Deck(Base):
     uid: Mapped[str | None] = mapped_column(String(36), unique=True, index=True, default=new_uid)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
     name: Mapped[str] = mapped_column(String(80))
+    # Empty for a language folder; for a topic ("Кошки") it is the uid of its language folder.
+    parent_uid: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     # BCP-47 code used for pronunciation in the browser, e.g. "de-DE".
     lang_code: Mapped[str | None] = mapped_column(String(16), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)

@@ -116,6 +116,7 @@ class SyncOp(BaseModel):
     at: datetime | None = None  # when it happened on the phone
     uid: str = Field(min_length=8, max_length=36)  # the folder or word it is about
     deck_uid: str | None = Field(default=None, max_length=36)
+    parent_uid: str | None = Field(default=None, max_length=36)  # topic inside a language folder
     name: str | None = Field(default=None, max_length=200)
     lang_code: str | None = Field(default=None, max_length=16)
     front: str | None = Field(default=None, max_length=1000)
@@ -133,6 +134,7 @@ class SyncIn(BaseModel):
 
 class SyncDeck(BaseModel):
     uid: str
+    parent_uid: str | None = None
     name: str
     lang_code: str | None
     created_at: str

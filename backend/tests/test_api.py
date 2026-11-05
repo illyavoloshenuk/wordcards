@@ -120,6 +120,8 @@ def test_old_database_gets_new_column(tmp_path, monkeypatch):
     con = sqlite3.connect(path)
     con.execute("CREATE TABLE cards (id INTEGER PRIMARY KEY, deck_id INTEGER, front TEXT, back TEXT, example TEXT)")
     con.execute("INSERT INTO cards (deck_id, front, back) VALUES (1, 'Hund', 'собака')")
+    con.execute("CREATE TABLE decks (id INTEGER PRIMARY KEY, user_id INTEGER, name TEXT, created_at DATETIME)")
+    con.execute("INSERT INTO decks (user_id, name, created_at) VALUES (1, 'DE', '2026-10-01 10:00:00')")
     con.commit()
     con.close()
 
@@ -129,6 +131,8 @@ def test_old_database_gets_new_column(tmp_path, monkeypatch):
     con = sqlite3.connect(path)
     cols = {row[1] for row in con.execute("PRAGMA table_info(cards)")}
     assert {"example_translation", "uid", "updated_at"} <= cols
+    deck_cols = {row[1] for row in con.execute("PRAGMA table_info(decks)")}
+    assert "parent_uid" in deck_cols
     front, card_uid = con.execute("SELECT front, uid FROM cards").fetchone()
     assert front == "Hund" and len(card_uid) == 36
     con.close()

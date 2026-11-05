@@ -165,3 +165,57 @@ def test_big_answers_are_compressed(client, auth):
     ]
     r = client.post("/api/sync", json={"ops": ops}, headers={**auth, "Accept-Encoding": "gzip"})
     assert r.headers.get("content-encoding") == "gzip"
+
+
+# ---- topics inside a language folder ----
+def test_topics_and_moving_words(client, auth):
+    de, cats, work, word = uid(), uid(), uid(), uid()
+    state = sync(
+        client, auth,
+        op("deck_upsert", uid=de, name="Немецкий", lang_code="de-DE"),
+        op("card_upsert", uid=word, deck_uid=de, front="die Katze", back="кошка"),
+        op("deck_upsert", uid=cats, parent_uid=de, name="Кошки", lang_code="de-DE"),
+        op("deck_upsert", uid=work, parent_uid=de, name="Работа", lang_code="de-DE"),
+        op("card_upsert", uid=word, deck_uid=cats, front="die Katze", back="кошка"),  # move into the topic
+        op("card_review", uid=word, known=True),
+    )
+    assert state["rejected"] == []
+    parents = {d["uid"]: d["parent_uid"] for d in state["decks"]}
+    assert parents == {de: None, cats: de, work: de}
+    [card] = state["cards"]
+    assert card["deck_uid"] == cats and card["box"] == 1  # progress kept after moving
+
+
+def test_old_app_rename_keeps_topic(client, auth):
+    de, cats = uid(), uid()
+    sync(client, auth, op("deck_upsert", uid=de, name="DE"), op("deck_upsert", uid=cats, parent_uid=de, name="Кошки"))
+    # an older app version sends no parent_uid at all
+    state = sync(client, auth, op("deck_upsert", uid=cats, name="Котики"))
+    topic = next(d for d in state["decks"] if d["uid"] == cats)
+    assert (topic["name"], topic["parent_uid"]) == ("Котики", de)
+
+
+def test_topic_rules(client, auth):
+    de, cats, deep = uid(), uid(), uid()
+    sync(client, auth, op("deck_upsert", uid=de, name="DE"), op("deck_upsert", uid=cats, parent_uid=de, name="Кошки"))
+    bad = [
+        op("deck_upsert", uid=deep, parent_uid=cats, name="Тема в теме"),
+        op("deck_upsert", uid=uid(), parent_uid=uid(), name="Нет родителя"),
+        op("deck_upsert", uid=de, parent_uid=de, name="Сам в себе"),
+    ]
+    state = sync(client, auth, *bad)
+    assert len(state["rejected"]) == 3
+
+
+def test_deleting_language_deletes_its_topics_and_words(client, auth):
+    de, cats, w1, w2 = uid(), uid(), uid(), uid()
+    first = sync(
+        client, auth,
+        op("deck_upsert", uid=de, name="DE"),
+        op("deck_upsert", uid=cats, parent_uid=de, name="Кошки"),
+        op("card_upsert", uid=w1, deck_uid=de, front="a", back="а"),
+        op("card_upsert", uid=w2, deck_uid=cats, front="b", back="б"),
+    )
+    r = client.post("/api/sync", json={"since": first["cursor"], "ops": [op("deck_delete", uid=de)]}, headers=auth).json()
+    assert set(r["deleted_decks"]) == {de, cats}
+    assert sync(client, auth)["cards"] == []

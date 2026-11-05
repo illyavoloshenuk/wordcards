@@ -69,16 +69,72 @@ test("applyOp: create, review, edit, delete", () => {
   assert.deepEqual(s, { decks: [], cards: [] });
 });
 
-test("study: due cards come forgotten first, then learning, then new", () => {
+test("study: urgent words are picked first, the lesson is shuffled", () => {
   const now = Date.parse("2026-01-10T00:00:00Z");
   const card = (uid, status, due) => ({ uid, deck_uid: "d", status, due_at: due, created_at: AT, box: 0 });
   const cards = [
-    card("new", "new", AT),
+    card("new1", "new", AT), card("new2", "new", AT),
     card("later", "learning", "2026-02-01T00:00:00.000Z"),
     card("learning", "learning", AT),
     card("forgot", "forgotten", AT),
   ];
-  assert.deepEqual(WC.studyCards(cards, "d", "due", 20, now).map((c) => c.uid), ["forgot", "learning", "new"]);
+  const two = WC.studyCards(cards, "d", "due", 2, now).map((c) => c.uid).sort();
+  assert.deepEqual(two, ["forgot", "learning"]);
+  const all = WC.studyCards(cards, "d", "due", 50, now).map((c) => c.uid);
+  assert.equal(all.length, 4);
+  assert.ok(!all.includes("later"));
+  // shuffled: over many lessons the first card is not always the same
+  const firsts = new Set(Array.from({ length: 40 }, () => WC.studyCards(cards, "d", "all", 50, now)[0].uid));
+  assert.ok(firsts.size > 1);
+});
+
+test("topics: a language folder covers its topics, a topic only itself", () => {
+  const s = { decks: [], cards: [] };
+  WC.applyOp(s, { type: "deck_upsert", uid: "de", name: "DE", at: AT });
+  WC.applyOp(s, { type: "deck_upsert", uid: "cats", parent_uid: "de", name: "Кошки", at: AT });
+  WC.applyOp(s, { type: "card_upsert", uid: "w1", deck_uid: "de", front: "Haus", back: "дом", at: AT });
+  WC.applyOp(s, { type: "card_upsert", uid: "w2", deck_uid: "cats", front: "Katze", back: "кошка", at: AT });
+  assert.deepEqual(WC.scopeUids(s.decks, "de"), ["de", "cats"]);
+  assert.equal(WC.deckStats(s.cards, WC.scopeUids(s.decks, "de")).total, 2);
+  assert.equal(WC.deckStats(s.cards, WC.scopeUids(s.decks, "cats")).total, 1);
+
+  // move a word into the topic, progress stays
+  WC.applyOp(s, { type: "card_review", uid: "w1", known: true, at: AT });
+  WC.applyOp(s, { type: "card_upsert", uid: "w1", deck_uid: "cats", front: "Haus", back: "дом", at: AT });
+  assert.deepEqual([s.cards[0].deck_uid, s.cards[0].box], ["cats", 1]);
+
+  // renaming without parent_uid (older app) keeps the topic where it is
+  WC.applyOp(s, { type: "deck_upsert", uid: "cats", name: "Котики", at: AT });
+  assert.equal(s.decks[1].parent_uid, "de");
+
+  // deleting the language deletes its topics and words
+  WC.applyOp(s, { type: "deck_delete", uid: "de", at: AT });
+  assert.deepEqual(s, { decks: [], cards: [] });
+});
+
+test("checkAnswer: the core word is enough", () => {
+  const cases = [
+    ["sich um etwas kümmern", "sich um etwas kümmern", "exact"],
+    ["Sich um etwas Kümmern!", "sich um etwas kümmern", "exact"],
+    ["kümmern", "sich um etwas kümmern", "close"],
+    ["sich kümmern", "sich um etwas kümmern", "close"],
+    ["kuemmern", "sich um etwas kümmern", "close"],
+    ["kümern", "sich um etwas kümmern", "close"],      // one typo
+    ["Hund", "der Hund", "close"],
+    ["die Hund", "der Hund", "close"],                 // wrong article: counted, full form is shown
+    ["Strasse", "die Straße", "close"],
+    ["sorgen", "kümmern (sich) / sorgen", "exact"], // one of the variants
+    ["kümmern", "kümmern (sich) / sorgen", "exact"],
+    ["to take care", "to take care of", "close"],
+    ["Katze", "der Hund", "wrong"],
+    ["Hunde", "der Hund", "wrong"],                    // short word: no typo allowance
+    ["laufen", "sich um etwas kümmern", "wrong"],
+    ["", "der Hund", "wrong"],
+    ["der", "der Hund", "wrong"],
+  ];
+  for (const [input, expected, result] of cases) {
+    assert.equal(WC.checkAnswer(input, expected), result, `${input} vs ${expected}`);
+  }
 });
 
 test("uuid looks like a uuid", () => {

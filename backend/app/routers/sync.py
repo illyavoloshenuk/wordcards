@@ -71,22 +71,59 @@ def find_card(db: Session, user: User, uid: str) -> Card | None:
     return card
 
 
+def has_topics(db: Session, deck_uid: str) -> bool:
+    return db.scalar(select(Deck.id).where(Deck.parent_uid == deck_uid).limit(1)) is not None
+
+
+def check_parent(db: Session, user: User, parent_uid: str | None, own_uid: str) -> str | None:
+    """A topic can only sit inside a language folder (one level, no loops)."""
+    if not parent_uid:
+        return None
+    if parent_uid == own_uid:
+        raise OpError("folder can't be inside itself")
+    parent = find_deck(db, user, parent_uid)
+    if parent is None:
+        raise OpError("folder was deleted")
+    if parent.parent_uid:
+        raise OpError("topics can't have topics")
+    return parent.uid
+
+
+def delete_deck(db: Session, user: User, deck: Deck) -> None:
+    """Delete a folder with its words and its topics."""
+    topics = db.scalars(select(Deck).where(Deck.parent_uid == deck.uid, Deck.user_id == user.id)).all()
+    for d in [*topics, deck]:
+        record_deletion(db, user.id, "deck", d.uid)
+        db.delete(d)
+
+
 def apply_op(db: Session, user: User, op: SyncOp, now: datetime) -> None:
     at = to_utc(op.at, now)
 
     if op.type == "deck_upsert":
         name = clean(op.name, 80, "name")
         deck = find_deck(db, user, op.uid)
+        # Older app versions don't send parent_uid: then the folder keeps the one it has.
+        sets_parent = "parent_uid" in op.model_fields_set
+        parent_uid = check_parent(db, user, op.parent_uid, op.uid) if sets_parent else None
         if deck is None:
-            db.add(Deck(uid=op.uid, user_id=user.id, name=name, lang_code=op.lang_code or None, created_at=at))
+            db.add(
+                Deck(
+                    uid=op.uid, user_id=user.id, name=name, lang_code=op.lang_code or None,
+                    parent_uid=parent_uid, created_at=at,
+                )
+            )
         else:
+            if sets_parent and parent_uid and has_topics(db, deck.uid):
+                raise OpError("a folder with topics can't become a topic")
             deck.name, deck.lang_code = name, op.lang_code or None
+            if sets_parent:
+                deck.parent_uid = parent_uid
 
     elif op.type == "deck_delete":
         deck = find_deck(db, user, op.uid)
         if deck is not None:
-            record_deletion(db, user.id, "deck", deck.uid)
-            db.delete(deck)
+            delete_deck(db, user, deck)
 
     elif op.type == "card_upsert":
         front = clean(op.front, 200, "word")
@@ -94,8 +131,9 @@ def apply_op(db: Session, user: User, op: SyncOp, now: datetime) -> None:
         example = clean(op.example, 1000, "example", required=False)
         example_tr = clean(op.example_translation, 1000, "example translation", required=False)
         card = find_card(db, user, op.uid)
+        target = find_deck(db, user, op.deck_uid)
         if card is None:
-            deck = find_deck(db, user, op.deck_uid)
+            deck = target
             if deck is None:
                 raise OpError("folder was deleted")
             db.add(
@@ -107,6 +145,8 @@ def apply_op(db: Session, user: User, op: SyncOp, now: datetime) -> None:
         else:
             card.front, card.back = front, back
             card.example, card.example_translation = example, example_tr
+            if target is not None and target.id != card.deck_id:
+                card.deck_id = target.id  # moved to another topic
 
     elif op.type == "card_delete":
         card = find_card(db, user, op.uid)
@@ -135,7 +175,7 @@ def apply_op(db: Session, user: User, op: SyncOp, now: datetime) -> None:
 
 
 def deck_out(d: Deck) -> SyncDeck:
-    return SyncDeck(uid=d.uid, name=d.name, lang_code=d.lang_code, created_at=iso(d.created_at))
+    return SyncDeck(uid=d.uid, parent_uid=d.parent_uid, name=d.name, lang_code=d.lang_code, created_at=iso(d.created_at))
 
 
 def card_out(c: Card, deck_uid: str) -> SyncCard:

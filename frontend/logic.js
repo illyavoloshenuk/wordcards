@@ -98,21 +98,30 @@
     const card = op.type.startsWith("card_") ? state.cards.find((c) => c.uid === op.uid) : null;
 
     switch (op.type) {
-      case "deck_upsert":
-        if (deckIdx === -1) state.decks.push({ uid: op.uid, name: op.name, lang_code: op.lang_code || null, created_at: op.at });
-        else Object.assign(state.decks[deckIdx], { name: op.name, lang_code: op.lang_code || null });
+      case "deck_upsert": {
+        const fields = { name: op.name, lang_code: op.lang_code || null };
+        if ("parent_uid" in op) fields.parent_uid = op.parent_uid || null;
+        if (deckIdx === -1) state.decks.push({ uid: op.uid, parent_uid: null, created_at: op.at, ...fields });
+        else Object.assign(state.decks[deckIdx], fields);
         break;
-      case "deck_delete":
-        if (deckIdx !== -1) state.decks.splice(deckIdx, 1);
-        state.cards = state.cards.filter((c) => c.deck_uid !== op.uid);
+      }
+      case "deck_delete": {
+        // A language folder takes its topics and all their words with it.
+        const gone = new Set([op.uid, ...state.decks.filter((d) => d.parent_uid === op.uid).map((d) => d.uid)]);
+        state.decks = state.decks.filter((d) => !gone.has(d.uid));
+        state.cards = state.cards.filter((c) => !gone.has(c.deck_uid));
         break;
+      }
       case "card_upsert": {
         const content = {
           front: op.front, back: op.back,
           example: op.example || null, example_translation: op.example_translation || null,
         };
-        if (card) Object.assign(card, content);
-        else if (state.decks.some((d) => d.uid === op.deck_uid)) {
+        if (card) {
+          Object.assign(card, content);
+          // Moved to another topic of the same language.
+          if (op.deck_uid && state.decks.some((d) => d.uid === op.deck_uid)) card.deck_uid = op.deck_uid;
+        } else if (state.decks.some((d) => d.uid === op.deck_uid)) {
           state.cards.push({
             uid: op.uid, deck_uid: op.deck_uid, ...content,
             box: 0, status: "new", due_at: op.at, times_correct: 0, times_wrong: 0, created_at: op.at,
@@ -160,10 +169,19 @@
   }
 
   // ---------- reading ----------
-  function deckStats(cards, deckUid, now = Date.now()) {
+  /** One folder uid or a list of them (a language with its topics). */
+  const asSet = (uids) => new Set(Array.isArray(uids) ? uids : [uids]);
+
+  /** A language folder means itself plus all its topics; a topic means only itself. */
+  function scopeUids(decks, uid) {
+    return [uid, ...decks.filter((d) => d.parent_uid === uid).map((d) => d.uid)];
+  }
+
+  function deckStats(cards, deckUids, now = Date.now()) {
+    const scope = asSet(deckUids);
     const s = { total: 0, new: 0, learning: 0, forgotten: 0, learned: 0, due: 0 };
     for (const c of cards) {
-      if (c.deck_uid !== deckUid) continue;
+      if (!scope.has(c.deck_uid)) continue;
       s.total += 1;
       s[c.status] += 1;
       if (Date.parse(c.due_at) <= now) s.due += 1;
@@ -182,24 +200,91 @@
 
   const PRIORITY = { forgotten: 0, learning: 1, learned: 2, new: 3 };
 
-  /** Cards for one lesson: due | forgotten | learned | all. Same rules as the server. */
-  function studyCards(cards, deckUid, mode, limit, now = Date.now()) {
-    const own = cards.filter((c) => c.deck_uid === deckUid);
-    let picked;
+  /** Cards for one lesson, always in random order.
+      due        words whose time has come; forgotten ones are picked first, then learning, then new
+      forgotten  only forgotten words
+      learned    only learned words
+      all        every word */
+  function studyCards(cards, deckUids, mode, limit, now = Date.now()) {
+    const scope = asSet(deckUids);
+    const own = cards.filter((c) => scope.has(c.deck_uid));
     if (mode === "due") {
-      picked = own
-        .filter((c) => Date.parse(c.due_at) <= now)
-        .sort((a, b) =>
-          PRIORITY[a.status] - PRIORITY[b.status] ||
-          Date.parse(a.due_at) - Date.parse(b.due_at) ||
-          Date.parse(a.created_at) - Date.parse(b.created_at)
-        );
-    } else if (mode === "forgotten" || mode === "learned") {
-      picked = shuffle(own.filter((c) => c.status === mode));
-    } else {
-      picked = shuffle(own);
+      // Which words: the most urgent ones (shuffled inside each group, so the
+      // same new words aren't always first). Then the lesson itself is shuffled.
+      const urgent = shuffle(own.filter((c) => Date.parse(c.due_at) <= now))
+        .sort((a, b) => PRIORITY[a.status] - PRIORITY[b.status]);
+      return shuffle(urgent.slice(0, limit));
     }
-    return picked.slice(0, limit);
+    const picked = mode === "forgotten" || mode === "learned" ? own.filter((c) => c.status === mode) : own;
+    return shuffle(picked).slice(0, limit);
+  }
+
+  // ---------- checking a typed answer ----------
+  // Words you may leave out: articles, "sich", "etwas"/"jemanden", prepositions.
+  // So "kümmern" counts for "sich um etwas kümmern" and "Hund" for "der Hund".
+  const OPTIONAL_WORDS = new Set(
+    (
+      "der die das den dem des ein eine einen einem einer eines " +
+      "sich etwas etw jemanden jemandem jemand jmdn jmdm jmd jdn jdm " +
+      "um an auf aus bei fuer mit nach ueber unter von vor zu zum zur in im gegen ohne durch " +
+      "to the a an sb sth somebody something someone of for with at on by from about"
+    ).split(" ")
+  );
+
+  /** Lowercase, ä->ae ö->oe ü->ue ß->ss, no punctuation. */
+  function loose(text) {
+    return String(text)
+      .toLowerCase()
+      .normalize("NFC")
+      .replace(/ä/g, "ae").replace(/ö/g, "oe").replace(/ü/g, "ue").replace(/ß/g, "ss")
+      .replace(/[.,!?;:"'«»„“”()[\]…]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  const coreOf = (text) => loose(text).split(" ").filter((w) => w && !OPTIONAL_WORDS.has(w)).join(" ");
+
+  /** "kümmern (sich) / sorgen" -> ["kümmern sich", "kümmern", "sorgen"] */
+  function answerVariants(expected) {
+    const out = [];
+    for (const part of String(expected).split(/[\/;,]|\s+oder\s+|\s+or\s+/)) {
+      if (!part.trim()) continue;
+      out.push(part.replace(/[()]/g, " "));
+      if (/\(.*\)/.test(part)) out.push(part.replace(/\([^)]*\)/g, " "));
+    }
+    return out.length ? out : [String(expected)];
+  }
+
+  function editDistance(a, b) {
+    const row = Array.from({ length: b.length + 1 }, (_, j) => j);
+    for (let i = 1; i <= a.length; i++) {
+      let prev = row[0];
+      row[0] = i;
+      for (let j = 1; j <= b.length; j++) {
+        const tmp = row[j];
+        row[j] = Math.min(row[j] + 1, row[j - 1] + 1, prev + (a[i - 1] === b[j - 1] ? 0 : 1));
+        prev = tmp;
+      }
+    }
+    return row[b.length];
+  }
+
+  /** "exact" - written exactly; "close" - right word, small things missing
+      (article, sich, preposition, umlaut, one typo) - counts as right;
+      "wrong" - wrong. */
+  function checkAnswer(input, expected) {
+    const given = loose(input);
+    if (!given) return "wrong";
+    const givenCore = coreOf(input);
+    let close = false;
+    for (const variant of answerVariants(expected)) {
+      if (given === loose(variant)) return "exact";
+      const core = coreOf(variant);
+      if (!core || !givenCore) continue;
+      if (givenCore === core) close = true;
+      else if (core.length >= 5 && editDistance(givenCore, core) <= 1) close = true;
+    }
+    return close ? "close" : "wrong";
   }
 
   function uuid() {
@@ -214,7 +299,8 @@
   }
 
   const api = {
-    review, parseWordList, applyOp, mergeChanges, withPending, deckStats, studyCards, shuffle, uuid, INTERVAL_DAYS,
+    review, parseWordList, applyOp, mergeChanges, withPending, scopeUids, deckStats, studyCards, checkAnswer,
+    shuffle, uuid, INTERVAL_DAYS,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.WC = api;

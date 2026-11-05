@@ -10,14 +10,17 @@ lessons, games and adding words all work without internet and sync later.
 ## Features
 
 - Accounts with login (passwords hashed with PBKDF2, JWT tokens)
-- Folders per language (German, English, Chinese, …)
+- Folders per language (German, English, Chinese, …) with **topics** inside ("Cats", "Work"):
+  learn one topic, or the whole language at once; move words between topics, progress is kept
+- Lesson size: 10, 20, 30, 50 or all words; lessons are always shuffled
 - Add many words at once by pasting a list: `word - translation - example`
 - Lessons with flip cards: **Не помню / Перевернуть / Помню**
 - Back side shows the translation and an example sentence
 - Spaced repetition (Leitner system, 5 boxes): known words come back after 1, 3, 7, 14, 30 days
 - Forgotten words come back again 5 cards later in the same lesson
 - Separate sections for forgotten and learned words
-- Two games: pick the translation, type the word
+- Two games: pick the translation, type the word — typing is forgiving: `kümmern` counts for
+  `sich um etwas kümmern` (articles, *sich*, prepositions, umlaut spelling and one typo are optional)
 - Reverse mode (see the translation, recall the word)
 - Pronunciation through the browser's speech synthesis
 - Offline first: works without internet, syncs automatically when back online

@@ -12,7 +12,7 @@
    Screens are switched by the part of the URL after "#":
      #/login                         login / sign up
      #/                              language folders
-     #/deck/<uid>                    one folder
+     #/deck/<uid>                    one folder: a language (with its topics) or one topic
      #/deck/<uid>/add                add words
      #/deck/<uid>/words              word list
      #/deck/<uid>/study/due          lesson (due | forgotten | learned | all)
@@ -24,7 +24,8 @@
 // How many cards later a forgotten word comes back inside one lesson.
 const REQUEUE_GAP = 5;
 const MAX_REPEATS = 3;
-const LESSON_SIZE = 20;
+const LESSON_SIZES = [10, 20, 30, 50, 0]; // 0 = all words
+const ALL_WORDS = 100_000;
 const SYNC_AFTER_CHANGE_MS = 4000; // gathers the answers of a lesson into one request
 const REFRESH_AFTER_MS = 2 * 60_000; // pull other devices' changes when the app comes back after this
 
@@ -94,6 +95,13 @@ function requeue(queue, position, card) {
 const settings = {
   get reverse() { return localStorage.getItem("wc.reverse") === "1"; },
   set reverse(v) { localStorage.setItem("wc.reverse", v ? "1" : "0"); },
+  /** How many words in one lesson or game: 10, 20, 30, 50 or 0 (= all). */
+  get lessonSize() {
+    const n = Number(localStorage.getItem("wc.size") ?? 20);
+    return LESSON_SIZES.includes(n) ? n : 20;
+  },
+  set lessonSize(n) { localStorage.setItem("wc.size", String(n)); },
+  get limit() { return this.lessonSize || ALL_WORDS; },
 };
 
 // ---------------- talking to the server ----------------
@@ -212,11 +220,38 @@ const store = {
     if (!deck) throw new Error("Папка не найдена");
     return deck;
   },
-  cardsOf(deckUid) {
-    return this.cards.filter((c) => c.deck_uid === deckUid);
+  /** The language folder: the folder itself, or the one a topic is in. */
+  root(deck) {
+    return (deck.parent_uid && this.decks.find((d) => d.uid === deck.parent_uid)) || deck;
   },
-  stats(deckUid) {
-    return WC.deckStats(this.cards, deckUid);
+  lang(deck) {
+    return deck.lang_code || this.root(deck).lang_code || null;
+  },
+  languages() {
+    return this.decks.filter((d) => !d.parent_uid);
+  },
+  topicsOf(uid) {
+    return this.decks.filter((d) => d.parent_uid === uid);
+  },
+  /** A language folder means itself + its topics; a topic only itself. */
+  scope(uid) {
+    return WC.scopeUids(this.decks, uid);
+  },
+  /** Words of exactly this folder (without its topics). */
+  cardsOf(uid) {
+    return this.cards.filter((c) => c.deck_uid === uid);
+  },
+  cardsIn(uid) {
+    const scope = new Set(this.scope(uid));
+    return this.cards.filter((c) => scope.has(c.deck_uid));
+  },
+  stats(uid) {
+    return WC.deckStats(this.cards, this.scope(uid));
+  },
+  title(deck) {
+    const root = this.root(deck);
+    const flag = flagFor(this.lang(deck));
+    return root === deck ? `${flag} ${deck.name}` : `${flag} ${root.name} › ${deck.name}`;
   },
 };
 
@@ -410,7 +445,7 @@ function viewLogin() {
 // ---------------- home: language folders ----------------
 function viewHome() {
   const menu = `<button class="text-btn" id="logout">Выйти</button>`;
-  const decks = store.decks.map((d) => ({ ...d, stats: store.stats(d.uid) }));
+  const decks = store.languages().map((d) => ({ ...d, stats: store.stats(d.uid), topics: store.topicsOf(d.uid).length }));
   const list = decks.length
     ? `<div class="folders">${decks.map((d) => `
         <a class="folder" href="#/deck/${d.uid}">
@@ -420,7 +455,7 @@ function viewHome() {
             ${d.stats.due ? `<span class="due-badge" title="Пора повторить">${d.stats.due}</span>` : ""}
           </div>
           <div class="folder-meta">${statusBar(d.stats)}
-            <p class="small muted" style="margin-top:8px">${wordsCount(d.stats.total)} · выучено ${d.stats.learned}</p>
+            <p class="small muted" style="margin-top:8px">${wordsCount(d.stats.total)} · выучено ${d.stats.learned}${d.topics ? ` · тем: ${d.topics}` : ""}</p>
           </div>
         </a>`).join("")}</div>`
     : `<div class="empty stack"><div class="stack-of-cards" aria-hidden="true">Aa</div>
@@ -448,44 +483,66 @@ function viewHome() {
   app.querySelector("#new-deck").onclick = () => deckDialog();
 }
 
-function deckDialog(deck = null) {
+/** Create or edit a language folder, or (with a parent) a topic inside it. */
+function deckDialog(deck = null, parent = null) {
+  parent = parent || (deck?.parent_uid ? store.deck(deck.parent_uid) : null);
+  const isTopic = !!parent;
   const dlg = document.createElement("dialog");
   const options = LANGUAGES.map(
     (l) => `<option value="${l.code}" ${deck && deck.lang_code === l.code ? "selected" : ""}>${l.flag} ${l.name}</option>`
   ).join("");
+  const title = isTopic ? (deck ? "Настройки темы" : `Новая тема в «${parent.name}»`) : deck ? "Настройки папки" : "Новая папка";
   dlg.innerHTML = `
     <form method="dialog">
-      <h2>${deck ? "Настройки папки" : "Новая папка"}</h2>
-      <div><label for="lang">Язык</label><select id="lang" name="lang">${options}</select></div>
+      <h2>${esc(title)}</h2>
+      ${isTopic
+        ? `<p class="small muted">Тема — это отдельная папка внутри языка, например «Кошки» или «Работа». Её можно учить отдельно, а урок всего языка берёт слова и из тем.</p>`
+        : `<div><label for="lang">Язык</label><select id="lang" name="lang">${options}</select></div>`}
       <div><label for="name">Название</label>
-        <input id="name" name="name" maxlength="80" required value="${esc(deck?.name || "")}" placeholder="Немецкий"></div>
-      <p class="small muted">Язык нужен, чтобы приложение могло произносить слова вслух.</p>
+        <input id="name" name="name" maxlength="80" required value="${esc(deck?.name || "")}" placeholder="${isTopic ? "Кошки" : "Немецкий"}"></div>
+      ${isTopic ? "" : `<p class="small muted">Язык нужен, чтобы приложение могло произносить слова вслух.</p>`}
       <div class="dialog-btns">
         <button class="btn" value="cancel" formnovalidate>Отмена</button>
         <button class="btn btn-primary" value="save">${deck ? "Сохранить" : "Создать"}</button>
       </div>
-      ${deck ? `<button class="btn btn-danger btn-block" value="delete" formnovalidate>Удалить папку со всеми словами</button>` : ""}
+      ${deck && isTopic ? `<button class="btn btn-danger btn-block" value="delete" formnovalidate>Удалить тему</button>
+        <p class="small muted">Слова темы не пропадут: они перейдут в «${esc(parent.name)}».</p>` : ""}
+      ${deck && !isTopic ? `<button class="btn btn-danger btn-block" value="delete" formnovalidate>Удалить папку со всеми словами</button>` : ""}
     </form>`;
   document.body.append(dlg);
   const name = dlg.querySelector("#name");
   const lang = dlg.querySelector("#lang");
-  // Fill the name from the chosen language, until the user types their own.
-  let touched = !!deck;
-  name.addEventListener("input", () => (touched = true));
-  lang.addEventListener("change", () => {
-    if (!touched) name.value = lang.value ? LANGUAGES.find((l) => l.code === lang.value).name : "";
-  });
-  if (!deck) name.value = LANGUAGES[0].name;
+  if (lang) {
+    // Fill the name from the chosen language, until the user types their own.
+    let touched = !!deck;
+    name.addEventListener("input", () => (touched = true));
+    lang.addEventListener("change", () => {
+      if (!touched) name.value = lang.value ? LANGUAGES.find((l) => l.code === lang.value).name : "";
+    });
+    if (!deck) name.value = LANGUAGES[0].name;
+  }
 
   dlg.addEventListener("close", () => {
     const action = dlg.returnValue;
     dlg.remove();
     if (action === "save" && name.value.trim()) {
       const uid = deck ? deck.uid : WC.uuid();
-      store.commit({ type: "deck_upsert", uid, name: name.value.trim().slice(0, 80), lang_code: lang.value || null });
+      store.commit({
+        type: "deck_upsert",
+        uid,
+        name: name.value.trim().slice(0, 80),
+        lang_code: isTopic ? parent.lang_code || null : lang.value || null,
+        parent_uid: isTopic ? parent.uid : null,
+      });
       if (deck) router();
       else location.hash = `#/deck/${uid}/add`;
-    } else if (action === "delete" && confirm(`Удалить «${deck.name}» и все слова в ней?`)) {
+    } else if (action === "delete" && isTopic) {
+      if (!confirm(`Удалить тему «${deck.name}»? Её слова перейдут в «${parent.name}».`)) return;
+      const moves = store.cardsOf(deck.uid).map((c) => moveOp(c, parent.uid));
+      store.commit(...moves, { type: "deck_delete", uid: deck.uid });
+      toast("Тема удалена, слова сохранены");
+      location.hash = `#/deck/${parent.uid}`;
+    } else if (action === "delete" && confirm(`Удалить «${deck.name}» со всеми темами и словами?`)) {
       store.commit({ type: "deck_delete", uid: deck.uid });
       toast("Папка удалена");
       location.hash = "#/";
@@ -494,39 +551,90 @@ function deckDialog(deck = null) {
   dlg.showModal();
 }
 
+/** Move a word to another folder of the same language; its progress stays. */
+function moveOp(card, deckUid) {
+  const { uid, front, back, example, example_translation } = card;
+  return { type: "card_upsert", uid, deck_uid: deckUid, front, back, example, example_translation };
+}
+
+/** <select> with the language folder and its topics. */
+function topicSelect(root, selected, id = "topic") {
+  const opts = [root, ...store.topicsOf(root.uid)].map(
+    (d) => `<option value="${d.uid}" ${d.uid === selected ? "selected" : ""}>${d === root ? `Без темы (просто «${esc(root.name)}»)` : esc(d.name)}</option>`
+  );
+  return `<select id="${id}">${opts.join("")}</select>`;
+}
+
 // ---------------- one folder ----------------
 function viewDeck(id) {
   const deck = store.deck(id);
+  const root = store.root(deck);
+  const isTopic = root !== deck;
   const s = store.stats(id);
-  const gear = `<button class="icon-btn" id="settings" aria-label="Настройки папки">⋯</button>`;
+  const topics = isTopic ? [] : store.topicsOf(id);
+  const back = isTopic ? `#/deck/${root.uid}` : "#/";
+  const gear = `<button class="icon-btn" id="settings" aria-label="Настройки">⋯</button>`;
   const off = (n) => (n ? "" : 'aria-disabled="true" tabindex="-1"');
+
+  const topicsSection = isTopic ? "" : `
+    <section class="section">
+      <h2>Темы <span class="count">${topics.length}</span></h2>
+      <p class="muted small">${topics.length
+        ? "Учи тему отдельно — или весь язык сразу: урок выше берёт слова и из всех тем."
+        : "Разложи слова по темам, например «Кошки» или «Работа», и учи их отдельно."}</p>
+      ${topics.length ? `<ul class="topics">${topics.map((t) => {
+        const ts = store.stats(t.uid);
+        return `<li><a class="topic-row" href="#/deck/${t.uid}">
+          <span class="grow"><span class="topic-name">${esc(t.name)}</span>
+            <span class="small muted">${wordsCount(ts.total)} · выучено ${ts.learned}</span></span>
+          ${ts.due ? `<span class="due-badge" title="Пора повторить">${ts.due}</span>` : ""}
+          <span aria-hidden="true" class="muted">›</span></a></li>`;
+      }).join("")}</ul>` : ""}
+      <div class="btns"><button class="btn" id="new-topic">＋ Новая тема</button></div>
+    </section>`;
 
   if (!s.total) {
     app.innerHTML = `
-      ${topbar(`${flagFor(deck.lang_code)} ${deck.name}`, "#/", gear)}
-      <div class="empty stack"><div class="stack-of-cards" aria-hidden="true">Aa</div>
-        <p>В папке пока нет слов.</p>
-        <a class="btn btn-primary btn-block" href="#/deck/${id}/add">Добавить слова</a></div>`;
+      ${topbar(store.title(deck), back, gear)}
+      <div class="stack">
+        <div class="empty stack"><div class="stack-of-cards" aria-hidden="true">Aa</div>
+          <p>${isTopic ? "В теме пока нет слов." : "В папке пока нет слов."}</p>
+          <a class="btn btn-primary btn-block" href="#/deck/${id}/add">Добавить слова</a></div>
+        ${topicsSection}
+      </div>`;
     app.querySelector("#settings").onclick = () => deckDialog(deck);
+    app.querySelector("#new-topic")?.addEventListener("click", () => deckDialog(null, deck));
     return;
   }
 
-  const lessonCount = Math.min(s.due, LESSON_SIZE);
+  const size = settings.lessonSize;
+  const lessonCount = Math.min(s.due, settings.limit);
+  const sizeChips = LESSON_SIZES.map(
+    (n) => `<button class="chip" data-size="${n}" aria-pressed="${n === size}">${n || "Все"}</button>`
+  ).join("");
+
   app.innerHTML = `
-    ${topbar(`${flagFor(deck.lang_code)} ${deck.name}`, "#/", gear)}
+    ${topbar(store.title(deck), back, gear)}
     <div class="stack">
       <div>${statusBar(s)}${legend(s)}</div>
+
+      <div>
+        <p class="small muted" id="size-label" style="margin-bottom:6px">Слов за один урок</p>
+        <div class="chips" role="group" aria-labelledby="size-label">${sizeChips}</div>
+      </div>
 
       ${lessonCount
         ? `<a class="btn btn-primary btn-block btn-big" href="#/deck/${id}/study/due">Начать урок · ${wordsCount(lessonCount)}</a>`
         : `<div class="section"><h2>На сегодня всё</h2>
-            <p class="muted small">Новых слов нет, а выученные вернутся, когда придёт время. Можно добавить слова или пройти все карточки.</p>
-            <div class="btns"><a class="btn" href="#/deck/${id}/study/all">Пройти все слова</a></div></div>`}
+            <p class="muted small">Новых слов нет, а выученные вернутся, когда придёт время. Можно добавить слова или пройти все карточки.</p></div>`}
+      <a class="btn btn-block" href="#/deck/${id}/study/all">Все слова вразброс · ${wordsCount(Math.min(s.total, settings.limit))}</a>
 
       <label class="row small muted" style="font-weight:500;cursor:pointer">
         <input type="checkbox" id="reverse" style="width:20px;min-height:20px" ${settings.reverse ? "checked" : ""}>
         Показывать сначала перевод, а слово вспоминать
       </label>
+
+      ${topicsSection}
 
       <section class="section">
         <h2>Забытые <span class="count">${s.forgotten}</span></h2>
@@ -547,7 +655,7 @@ function viewDeck(id) {
       </section>
 
       <section class="section">
-        <h2>Игры со всеми словами</h2>
+        <h2>Игры ${isTopic ? "со словами темы" : "со всеми словами"}</h2>
         <div class="btns">
           <a class="btn" href="#/deck/${id}/game/choose/all">Выбери перевод</a>
           <a class="btn" href="#/deck/${id}/game/type/all">Напиши слово</a>
@@ -562,15 +670,22 @@ function viewDeck(id) {
     </div>`;
 
   app.querySelector("#settings").onclick = () => deckDialog(deck);
+  app.querySelector("#new-topic")?.addEventListener("click", () => deckDialog(null, deck));
   app.querySelector("#reverse").onchange = (e) => (settings.reverse = e.target.checked);
+  app.querySelectorAll("[data-size]").forEach((chip) =>
+    chip.addEventListener("click", () => { settings.lessonSize = Number(chip.dataset.size); router(); })
+  );
 }
 
 // ---------------- add words ----------------
 function viewAdd(id) {
   const deck = store.deck(id);
+  const root = store.root(deck);
+  const hasTopics = store.topicsOf(root.uid).length > 0;
   app.innerHTML = `
     ${topbar("Добавить слова", `#/deck/${id}`)}
     <form class="stack" id="add-form">
+      ${hasTopics ? `<div><label for="topic">Куда добавить</label>${topicSelect(root, id)}</div>` : ""}
       <div>
         <label for="text">Список слов</label>
         <div class="format-hint small">
@@ -586,7 +701,7 @@ laufen - бегать
 die Straße - улица"></textarea>
       </div>
       <div id="result"></div>
-      <button class="btn btn-primary btn-block" id="save">Добавить в «${esc(deck.name)}»</button>
+      <button class="btn btn-primary btn-block" id="save">Добавить</button>
     </form>`;
 
   const form = app.querySelector("#add-form");
@@ -596,20 +711,22 @@ die Straße - улица"></textarea>
     const text = form.text.value;
     if (!text.trim()) { result.innerHTML = `<p class="error-text">Напиши хотя бы одно слово</p>`; return; }
 
+    const target = app.querySelector("#topic")?.value || id;
     const parsed = WC.parseWordList(text);
-    const existing = new Set(store.cardsOf(id).map((c) => c.front.toLowerCase()));
+    // The same word twice in one language makes no sense, whatever the topic.
+    const existing = new Set(store.cardsIn(root.uid).map((c) => c.front.toLowerCase()));
     const skipped = [];
     const changes = [];
     for (const w of parsed.words) {
       const key = w.front.toLowerCase();
       if (existing.has(key)) { skipped.push(w.front); continue; }
       existing.add(key);
-      changes.push({ type: "card_upsert", uid: WC.uuid(), deck_uid: id, ...w });
+      changes.push({ type: "card_upsert", uid: WC.uuid(), deck_uid: target, ...w });
     }
     if (changes.length) store.commit(...changes);
 
     const parts = [];
-    if (skipped.length) parts.push(`<p class="small muted">Уже были в папке: ${esc(skipped.join(", "))}</p>`);
+    if (skipped.length) parts.push(`<p class="small muted">Уже были в «${esc(root.name)}»: ${esc(skipped.join(", "))}. Перенести слово в тему можно в «Все слова».</p>`);
     if (parsed.errors.length) {
       parts.push(`<p class="error-text">Не понял эти строки. У слова нужен перевод через « - », а строка с -- или ... должна идти под словом:</p>`);
       form.text.value = parsed.errors.join("\n");
@@ -617,19 +734,23 @@ die Straße - улица"></textarea>
       form.text.value = "";
     }
     result.innerHTML = `<div class="section"><p><b>Добавлено: ${wordsCount(changes.length)}</b></p>${parts.join("")}
-      <div class="btns"><a class="btn btn-primary" href="#/deck/${id}">К папке</a></div></div>`;
+      <div class="btns"><a class="btn btn-primary" href="#/deck/${target}">Открыть «${esc(store.deck(target).name)}»</a></div></div>`;
     if (changes.length) toast(`Добавлено: ${wordsCount(changes.length)}`);
   });
 }
 
 // ---------------- word list ----------------
 function viewWords(id) {
-  store.deck(id); // throws if the folder is gone
+  const deck = store.deck(id);
+  const root = store.root(deck);
+  const canMove = store.topicsOf(root.uid).length > 0;
   let filter = "all";
   let query = "";
+  let selecting = false;
+  const selected = new Set();
 
   app.innerHTML = `
-    ${topbar("Все слова", `#/deck/${id}`)}
+    ${topbar("Все слова", `#/deck/${id}`, canMove ? `<button class="text-btn" id="select">Выбрать</button>` : "")}
     <div class="stack">
       <input type="search" id="q" placeholder="Поиск" aria-label="Поиск слова">
       <div class="chips" role="group" aria-label="Фильтр">
@@ -637,21 +758,34 @@ function viewWords(id) {
         ${Object.entries(STATUS_NAMES).map(([k, v]) => `<button class="chip" data-f="${k}" aria-pressed="false">${v}</button>`).join("")}
       </div>
       <ul class="words" id="list"></ul>
+    </div>
+    <div class="move-bar" id="move-bar" hidden>
+      <span id="move-count" class="small"></span>
+      ${canMove ? topicSelect(root, root.uid, "move-to") : ""}
+      <button class="btn btn-primary" id="move">Перенести</button>
     </div>`;
 
   const list = app.querySelector("#list");
+  const bar = app.querySelector("#move-bar");
+  const topicName = (c) => (c.deck_uid !== root.uid && c.deck_uid !== id ? store.decks.find((d) => d.uid === c.deck_uid)?.name : "");
+
   function draw() {
     const q = query.toLowerCase();
-    const shown = store.cardsOf(id)
+    const shown = store.cardsIn(id)
       .filter((c) => (filter === "all" || c.status === filter) && (!q || c.front.toLowerCase().includes(q) || c.back.toLowerCase().includes(q)))
       .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
     list.innerHTML = shown.length
       ? shown.map((c) => `
-          <li><button class="word-row" data-uid="${c.uid}">
+          <li><button class="word-row" data-uid="${c.uid}" aria-pressed="${selected.has(c.uid)}">
+            ${selecting ? `<span class="tick" aria-hidden="true">${selected.has(c.uid) ? "✓" : ""}</span>` : ""}
             <span class="dot ${c.status}" title="${STATUS_NAMES[c.status]}"></span>
             <span class="grow"><span class="w">${esc(c.front)}</span><br><span class="t">${esc(c.back)}</span></span>
+            ${topicName(c) ? `<span class="tag">${esc(topicName(c))}</span>` : ""}
           </button></li>`).join("")
       : `<li class="empty muted">Ничего не найдено</li>`;
+    bar.hidden = !selecting;
+    app.querySelector("#move-count").textContent = `Выбрано: ${selected.size}`;
+    app.querySelector("#move").disabled = !selected.size;
   }
   draw();
 
@@ -663,14 +797,38 @@ function viewWords(id) {
       draw();
     })
   );
+  app.querySelector("#select")?.addEventListener("click", (e) => {
+    selecting = !selecting;
+    selected.clear();
+    e.target.textContent = selecting ? "Отмена" : "Выбрать";
+    draw();
+  });
+  app.querySelector("#move").addEventListener("click", () => {
+    const to = app.querySelector("#move-to").value;
+    const moves = store.cards.filter((c) => selected.has(c.uid) && c.deck_uid !== to).map((c) => moveOp(c, to));
+    if (moves.length) store.commit(...moves);
+    toast(`Перенесено в «${store.deck(to).name}»: ${wordsCount(moves.length)}`);
+    selecting = false;
+    selected.clear();
+    app.querySelector("#select").textContent = "Выбрать";
+    draw();
+  });
   list.addEventListener("click", (e) => {
     const row = e.target.closest(".word-row");
     const card = row && store.cards.find((c) => c.uid === row.dataset.uid);
-    if (card) editDialog(card, draw);
+    if (!card) return;
+    if (selecting) {
+      if (selected.has(card.uid)) selected.delete(card.uid);
+      else selected.add(card.uid);
+      draw();
+    } else {
+      editDialog(card, draw);
+    }
   });
 }
 
 function editDialog(card, onChange) {
+  const root = store.root(store.deck(card.deck_uid));
   const dlg = document.createElement("dialog");
   dlg.innerHTML = `
     <form method="dialog">
@@ -679,6 +837,7 @@ function editDialog(card, onChange) {
       <div><label for="b">Перевод</label><input id="b" maxlength="200" required value="${esc(card.back)}"></div>
       <div><label for="ex">Пример</label><textarea id="ex" class="short" maxlength="1000">${esc(card.example || "")}</textarea></div>
       <div><label for="ext">Перевод примера</label><textarea id="ext" class="short" maxlength="1000">${esc(card.example_translation || "")}</textarea></div>
+      ${store.topicsOf(root.uid).length ? `<div><label for="topic">Тема</label>${topicSelect(root, card.deck_uid)}</div>` : ""}
       <p class="small muted">${STATUS_NAMES[card.status]} · вспомнил ${card.times_correct}, забыл ${card.times_wrong}</p>
       <div class="dialog-btns">
         <button class="btn" value="cancel" formnovalidate>Отмена</button>
@@ -694,9 +853,10 @@ function editDialog(card, onChange) {
     const action = dlg.returnValue;
     const v = (sel) => dlg.querySelector(sel).value.trim();
     const values = { front: v("#f"), back: v("#b"), example: v("#ex") || null, example_translation: v("#ext") || null };
+    const deckUid = dlg.querySelector("#topic")?.value || card.deck_uid;
     dlg.remove();
     if (action === "save" && values.front && values.back) {
-      store.commit({ type: "card_upsert", uid: card.uid, deck_uid: card.deck_uid, ...values });
+      store.commit({ type: "card_upsert", uid: card.uid, deck_uid: deckUid, ...values });
       toast("Сохранено");
     } else if (action === "reset") {
       store.commit({ type: "card_reset", uid: card.uid });
@@ -715,7 +875,8 @@ const LESSON_TITLES = { due: "Урок", forgotten: "Забытые слова",
 
 function viewStudy(id, mode) {
   const deck = store.deck(id);
-  const cards = WC.studyCards(store.cards, id, mode, LESSON_SIZE);
+  const lang = store.lang(deck);
+  const cards = WC.studyCards(store.cards, store.scope(id), mode, settings.limit);
   if (!cards.length) {
     app.innerHTML = `${topbar(LESSON_TITLES[mode], `#/deck/${id}`)}
       <div class="empty stack"><p>Здесь пока нет слов.</p><a class="btn" href="#/deck/${id}">К папке</a></div>`;
@@ -751,7 +912,7 @@ function viewStudy(id, mode) {
     const answer = reverse ? c.front : c.back;
     const dots = Array.from({ length: 5 }, (_, i) => `<i class="${i < c.box ? "on" : ""}"></i>`).join("");
     const again = repeats.get(c.uid) ? `<span class="card-tag">ещё раз</span>` : "";
-    const speakBtn = deck.lang_code && "speechSynthesis" in window
+    const speakBtn = lang && "speechSynthesis" in window
       ? `<button class="icon-btn speak" data-speak aria-label="Произнести">🔊</button>` : "";
     cardEl.className = "card";
     cardEl.innerHTML = `
@@ -817,7 +978,7 @@ function viewStudy(id, mode) {
   app.querySelector("#know").onclick = () => answer(true);
   app.querySelector("#forgot").onclick = () => answer(false);
   cardEl.addEventListener("click", (e) => {
-    if (e.target.closest("[data-speak]")) { e.stopPropagation(); speak(queue[pos].front, deck.lang_code); return; }
+    if (e.target.closest("[data-speak]")) { e.stopPropagation(); speak(queue[pos].front, lang); return; }
     flip();
   });
   const onKey = (e) => {
@@ -837,21 +998,27 @@ function normalize(text) {
   return text.toLowerCase().normalize("NFC").replace(/[.,!?;:"'«»()]/g, "").replace(/\s+/g, " ").trim();
 }
 
+const answerParts = (c) =>
+  `${c.example ? `<br><span class="small muted">${esc(c.example)}</span>` : ""}${c.example_translation ? `<br><span class="small muted">${esc(c.example_translation)}</span>` : ""}`;
+
 function viewGame(id, type, mode) {
   const deck = store.deck(id);
-  const all = store.cardsOf(id).map((c) => ({ ...c }));
+  const lang = store.lang(deck);
+  const all = store.cardsIn(id).map((c) => ({ ...c }));
+  // Wrong answers to choose from: the whole language, so a small topic still works.
+  const distractors = store.cardsIn(store.root(deck).uid);
   const pool = mode === "forgotten" ? all.filter((c) => c.status === "forgotten") : all;
   const title = type === "choose" ? "Выбери перевод" : "Напиши слово";
   const back = `#/deck/${id}`;
 
-  if (!pool.length || (type === "choose" && all.length < 2)) {
+  if (!pool.length || (type === "choose" && distractors.length < 2)) {
     app.innerHTML = `${topbar(title, back)}<div class="empty stack">
       <p>${type === "choose" ? "Для этой игры нужно хотя бы 2 слова в папке." : "Здесь пока нет слов."}</p>
       <a class="btn" href="${back}">К папке</a></div>`;
     return;
   }
 
-  const queue = WC.shuffle(pool).slice(0, LESSON_SIZE);
+  const queue = WC.shuffle(pool).slice(0, settings.limit);
   const firstAnswer = new Map();
   const repeats = new Map();
   let pos = 0;
@@ -906,11 +1073,11 @@ function viewGame(id, type, mode) {
 
   function drawChoose() {
     const c = queue[pos];
-    const others = WC.shuffle(all.filter((x) => x.uid !== c.uid && normalize(x.back) !== normalize(c.back))).slice(0, 3);
+    const others = WC.shuffle(distractors.filter((x) => x.uid !== c.uid && normalize(x.back) !== normalize(c.back))).slice(0, 3);
     const options = WC.shuffle([c, ...others]);
     game.innerHTML = `${header(c, c.front, "Выбери правильный перевод")}
       <div class="options">${options.map((o) => `<button class="btn option" data-uid="${o.uid}">${esc(o.back)}</button>`).join("")}</div>`;
-    if (deck.lang_code) speak(c.front, deck.lang_code);
+    if (lang) speak(c.front, lang);
     game.querySelector(".options").addEventListener("click", async (e) => {
       const btn = e.target.closest(".option");
       if (!btn || game.dataset.locked) return;
@@ -942,25 +1109,28 @@ function viewGame(id, type, mode) {
     input.focus();
     let done = false;
 
-    async function resolve(ok) {
+    // result: "exact" | "close" (right word, article/sich/preposition/typo missing) | "wrong"
+    async function resolve(result) {
       if (done) return;
       done = true;
       input.disabled = true;
       game.querySelectorAll("button").forEach((b) => (b.disabled = true));
-      fb.innerHTML = ok
-        ? `<span class="right">Верно!</span>`
-        : `<span class="wrong">Правильно: ${esc(c.front)}</span>${c.example ? `<br><span class="small muted">${esc(c.example)}</span>` : ""}${c.example_translation ? `<br><span class="small muted">${esc(c.example_translation)}</span>` : ""}`;
-      if (deck.lang_code) speak(c.front, deck.lang_code);
+      const ok = result !== "wrong";
+      fb.innerHTML =
+        result === "exact" ? `<span class="right">Верно!</span>`
+        : result === "close" ? `<span class="right">Засчитано!</span> Полностью: <b>${esc(c.front)}</b>${answerParts(c)}`
+        : `<span class="wrong">Правильно: ${esc(c.front)}</span>${answerParts(c)}`;
+      if (lang) speak(c.front, lang);
       record(c, ok);
-      await sleep(ok ? 800 : 2400);
+      await sleep(result === "exact" ? 800 : result === "close" ? 2200 : 2600);
       next();
     }
     game.querySelector("#tf").addEventListener("submit", (e) => {
       e.preventDefault();
       if (!input.value.trim()) { input.focus(); return; }
-      resolve(normalize(input.value) === normalize(c.front));
+      resolve(WC.checkAnswer(input.value, c.front));
     });
-    game.querySelector("#skip").onclick = () => resolve(false);
+    game.querySelector("#skip").onclick = () => resolve("wrong");
   }
 
   const draw = type === "choose" ? drawChoose : drawType;
