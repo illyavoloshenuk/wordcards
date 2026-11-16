@@ -170,3 +170,37 @@ test("withPending: a waiting answer is counted once, not twice", () => {
   assert.equal(view2.cards[0].box, 2);
   assert.equal(base.cards[0].box, 1); // the confirmed copy is left untouched
 });
+
+test("favorite: star a word, study only favorites, stats count them", () => {
+  const state = { decks: [{ uid: "d" }], cards: [] };
+  WC.applyOp(state, { type: "card_upsert", uid: "a", deck_uid: "d", front: "der Hund", back: "собака", at: AT });
+  WC.applyOp(state, { type: "card_upsert", uid: "b", deck_uid: "d", front: "laufen", back: "бегать", at: AT });
+  assert.equal(state.cards[0].favorite, false);
+  WC.applyOp(state, { type: "card_favorite", uid: "a", favorite: true, at: AT });
+  // editing keeps the star
+  WC.applyOp(state, { type: "card_upsert", uid: "a", deck_uid: "d", front: "der Hund", back: "пёс", at: AT });
+  assert.equal(state.cards[0].favorite, true);
+  assert.deepEqual(WC.studyCards(state.cards, "d", "favorite", 10).map((c) => c.uid), ["a"]);
+  assert.equal(WC.deckStats(state.cards, "d").favorite, 1);
+  WC.applyOp(state, { type: "card_favorite", uid: "a", favorite: false, at: AT });
+  assert.equal(WC.studyCards(state.cards, "d", "favorite", 10).length, 0);
+});
+
+test("deleting a topic removes its words but keeps the rest of the language", () => {
+  const state = {
+    decks: [{ uid: "de" }, { uid: "cats", parent_uid: "de" }],
+    cards: [{ uid: "a", deck_uid: "de" }, { uid: "b", deck_uid: "cats" }],
+  };
+  WC.applyOp(state, { type: "deck_delete", uid: "cats" });
+  assert.deepEqual(state.decks.map((d) => d.uid), ["de"]);
+  assert.deepEqual(state.cards.map((c) => c.uid), ["a"]);
+});
+
+test("splitArticle finds der/die/das", () => {
+  assert.deepEqual(WC.splitArticle("der Hund"), { article: "der", noun: "Hund" });
+  assert.deepEqual(WC.splitArticle("Die Straße, -n"), { article: "die", noun: "Straße, -n" });
+  assert.deepEqual(WC.splitArticle(" das Haus "), { article: "das", noun: "Haus" });
+  assert.equal(WC.splitArticle("laufen"), null);
+  assert.equal(WC.splitArticle("derselbe"), null);
+  assert.equal(WC.splitArticle("den Hund"), null);
+});

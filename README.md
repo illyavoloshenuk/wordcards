@@ -19,8 +19,12 @@ lessons, games and adding words all work without internet and sync later.
 - Spaced repetition (Leitner system, 5 boxes): known words come back after 1, 3, 7, 14, 30 days
 - Forgotten words come back again 5 cards later in the same lesson
 - Separate sections for forgotten and learned words
-- Two games: pick the translation, type the word — typing is forgiving: `kümmern` counts for
+- **Favorites:** star a word (during a lesson or in the word list) and study only starred words
+- Delete a word right from a lesson (with confirmation); select many words to delete, star or move
+  into a new topic; delete a topic together with all its words
+- Games: pick the translation, type the word — typing is forgiving: `kümmern` counts for
   `sich um etwas kümmern` (articles, *sich*, prepositions, umlaut spelling and one typo are optional)
+- German articles game: drag a noun onto **der / die / das** (or tap)
 - Reverse mode (see the translation, recall the word)
 - Pronunciation through the browser's speech synthesis
 - Offline first: works without internet, syncs automatically when back online

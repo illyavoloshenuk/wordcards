@@ -219,3 +219,32 @@ def test_deleting_language_deletes_its_topics_and_words(client, auth):
     r = client.post("/api/sync", json={"since": first["cursor"], "ops": [op("deck_delete", uid=de)]}, headers=auth).json()
     assert set(r["deleted_decks"]) == {de, cats}
     assert sync(client, auth)["cards"] == []
+
+
+def test_favorite_words(client, auth):
+    deck, card = uid(), uid()
+    state = sync(client, auth, op("deck_upsert", uid=deck, name="DE"), op("card_upsert", uid=card, deck_uid=deck, front="der Hund", back="собака"))
+    assert state["cards"][0]["favorite"] is False
+    state = sync(client, auth, op("card_favorite", uid=card, favorite=True))
+    assert state["cards"][0]["favorite"] is True
+    # editing the word keeps the star
+    state = sync(client, auth, op("card_upsert", uid=card, deck_uid=deck, front="der Hund", back="пёс"))
+    assert state["cards"][0]["favorite"] is True
+    state = sync(client, auth, op("card_favorite", uid=card, favorite=False))
+    assert state["cards"][0]["favorite"] is False
+    state = sync(client, auth, op("card_favorite", uid=card))
+    assert len(state["rejected"]) == 1
+
+
+def test_delete_topic_with_its_words(client, auth):
+    lang, topic, keep, gone = uid(), uid(), uid(), uid()
+    sync(
+        client, auth,
+        op("deck_upsert", uid=lang, name="DE"),
+        op("deck_upsert", uid=topic, name="Кошки", parent_uid=lang),
+        op("card_upsert", uid=keep, deck_uid=lang, front="der Hund", back="собака"),
+        op("card_upsert", uid=gone, deck_uid=topic, front="die Katze", back="кошка"),
+    )
+    state = sync(client, auth, op("deck_delete", uid=topic))
+    assert [d["uid"] for d in state["decks"]] == [lang]
+    assert [c["uid"] for c in state["cards"]] == [keep]

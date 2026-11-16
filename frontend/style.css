@@ -238,6 +238,34 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--l
 .type-feedback .right { color: var(--know); font-weight: 600; }
 .type-feedback .wrong { color: var(--forgot); font-weight: 600; }
 
+/* ---------- favorites ---------- */
+.star-btn { color: var(--ink-soft); }
+.star-btn[aria-pressed="true"] { color: #d9a400; }
+.star-mark { flex: none; color: #d9a400; font-size: 1.1rem; }
+.center { text-align: center; }
+
+/* ---------- game: der, die, das ---------- */
+.art-stage { display: grid; place-items: center; min-height: 190px; margin: 12px 0 20px; }
+.art-card {
+  position: relative; width: min(100%, 360px); padding: 34px 20px 22px; text-align: center;
+  background: var(--paper); border-radius: var(--radius-card);
+  box-shadow: 0 1px 0 var(--line), 0 14px 30px -18px rgba(31, 42, 68, 0.45);
+  touch-action: none; user-select: none; -webkit-user-select: none; cursor: grab;
+  transition: transform 0.2s;
+}
+.art-card.dragging { cursor: grabbing; transition: none; z-index: 5; }
+.art-card.result-know { box-shadow: 0 0 0 3px var(--know); }
+.art-card.result-forgot { box-shadow: 0 0 0 3px var(--forgot); }
+.art-zones { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.art-zone {
+  min-height: 96px; border-radius: var(--radius-ui); border: 2px dashed var(--line);
+  background: var(--paper); font: 700 1.4rem var(--serif); cursor: pointer;
+}
+.art-der { color: #3b6fd0; } .art-die { color: #d0443b; } .art-das { color: #2e9c6a; }
+.art-zone.hover { border-style: solid; border-color: currentColor; transform: scale(1.04); }
+.art-zone.correct { border-style: solid; border-color: var(--know); background: color-mix(in srgb, var(--know) 14%, var(--paper)); }
+.art-zone.wrong { border-style: solid; border-color: var(--forgot); background: color-mix(in srgb, var(--forgot) 14%, var(--paper)); }
+
 /* ---------- summary ---------- */
 .summary { text-align: center; padding-top: 6vh; }
 .summary .big { font-family: var(--serif); font-size: 3.5rem; font-weight: 700; line-height: 1; }
@@ -288,6 +316,7 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--l
   display: grid; grid-template-columns: 1fr; gap: 8px;
   background: var(--paper); border-top: 1px solid var(--line);
 }
+.move-bar select { flex: 1; min-width: 0; }
 .move-bar[hidden] { display: none; }
 
 /* ---------- sync status ---------- */

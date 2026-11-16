@@ -15,9 +15,10 @@
      #/deck/<uid>                    one folder: a language (with its topics) or one topic
      #/deck/<uid>/add                add words
      #/deck/<uid>/words              word list
-     #/deck/<uid>/study/due          lesson (due | forgotten | learned | all)
-     #/deck/<uid>/game/choose/all    game "pick the translation" (forgotten | all)
+     #/deck/<uid>/study/due          lesson (due | forgotten | learned | favorite | all)
+     #/deck/<uid>/game/choose/all    game "pick the translation" (forgotten | favorite | all)
      #/deck/<uid>/game/type/all      game "type the word"
+     #/deck/<uid>/game/article/all   game "der, die or das" (German nouns)
 */
 "use strict";
 
@@ -338,8 +339,9 @@ const routes = [
   [/^\/deck\/([\w-]+)$/, viewDeck, "deck"],
   [/^\/deck\/([\w-]+)\/add$/, viewAdd, "add"],
   [/^\/deck\/([\w-]+)\/words$/, viewWords, "words"],
-  [/^\/deck\/([\w-]+)\/study\/(due|forgotten|learned|all)$/, viewStudy, "study"],
-  [/^\/deck\/([\w-]+)\/game\/(choose|type)\/(forgotten|all)$/, viewGame, "game"],
+  [/^\/deck\/([\w-]+)\/study\/(due|forgotten|learned|favorite|all)$/, viewStudy, "study"],
+  [/^\/deck\/([\w-]+)\/game\/(choose|type)\/(forgotten|favorite|all)$/, viewGame, "game"],
+  [/^\/deck\/([\w-]+)\/game\/article\/(favorite|all)$/, viewArticles, "game"],
 ];
 
 async function router() {
@@ -505,8 +507,9 @@ function deckDialog(deck = null, parent = null) {
         <button class="btn" value="cancel" formnovalidate>Отмена</button>
         <button class="btn btn-primary" value="save">${deck ? "Сохранить" : "Создать"}</button>
       </div>
-      ${deck && isTopic ? `<button class="btn btn-danger btn-block" value="delete" formnovalidate>Удалить тему</button>
-        <p class="small muted">Слова темы не пропадут: они перейдут в «${esc(parent.name)}».</p>` : ""}
+      ${deck && isTopic ? `<button class="btn btn-danger btn-block" value="delete" formnovalidate>Удалить тему, слова оставить</button>
+        <p class="small muted">Слова перейдут в «${esc(parent.name)}».</p>
+        <button class="btn btn-danger btn-block" value="delete-all" formnovalidate>Удалить тему вместе со словами</button>` : ""}
       ${deck && !isTopic ? `<button class="btn btn-danger btn-block" value="delete" formnovalidate>Удалить папку со всеми словами</button>` : ""}
     </form>`;
   document.body.append(dlg);
@@ -542,6 +545,8 @@ function deckDialog(deck = null, parent = null) {
       store.commit(...moves, { type: "deck_delete", uid: deck.uid });
       toast("Тема удалена, слова сохранены");
       location.hash = `#/deck/${parent.uid}`;
+    } else if (action === "delete-all" && isTopic) {
+      deleteTopicWithWords(deck, parent);
     } else if (action === "delete" && confirm(`Удалить «${deck.name}» со всеми темами и словами?`)) {
       store.commit({ type: "deck_delete", uid: deck.uid });
       toast("Папка удалена");
@@ -550,6 +555,46 @@ function deckDialog(deck = null, parent = null) {
   });
   dlg.showModal();
 }
+
+/** Delete a topic and every word in it, after asking. */
+function deleteTopicWithWords(topic, parent) {
+  const n = store.cardsOf(topic.uid).length;
+  if (!confirm(`Удалить тему «${topic.name}» и ${wordsCount(n)} в ней? Это нельзя отменить.`)) return;
+  store.commit({ type: "deck_delete", uid: topic.uid });
+  toast(`Тема удалена вместе со словами: ${wordsCount(n)}`);
+  location.hash = `#/deck/${parent.uid}`;
+}
+
+/** A small window that asks for a name. Resolves with the text, or null on cancel. */
+function askName(title, placeholder = "") {
+  return new Promise((resolve) => {
+    const dlg = document.createElement("dialog");
+    dlg.innerHTML = `
+      <form method="dialog">
+        <h2>${esc(title)}</h2>
+        <div><label for="nm">Название</label><input id="nm" maxlength="80" required placeholder="${esc(placeholder)}"></div>
+        <div class="dialog-btns">
+          <button class="btn" value="cancel" formnovalidate>Отмена</button>
+          <button class="btn btn-primary" value="ok">Создать</button>
+        </div>
+      </form>`;
+    document.body.append(dlg);
+    dlg.addEventListener("close", () => {
+      const value = dlg.querySelector("#nm").value.trim().slice(0, 80);
+      dlg.remove();
+      resolve(dlg.returnValue === "ok" && value ? value : null);
+    });
+    dlg.showModal();
+  });
+}
+
+/** Change for a new topic inside a language folder. */
+function newTopicOp(root, name) {
+  return { type: "deck_upsert", uid: WC.uuid(), name, lang_code: root.lang_code || null, parent_uid: root.uid };
+}
+
+/** Is this folder German? Then the der/die/das game makes sense. */
+const isGerman = (lang) => !!lang && lang.toLowerCase().startsWith("de");
 
 /** Move a word to another folder of the same language; its progress stays. */
 function moveOp(card, deckUid) {
@@ -607,6 +652,7 @@ function viewDeck(id) {
     return;
   }
 
+  const german = isGerman(store.lang(deck));
   const size = settings.lessonSize;
   const lessonCount = Math.min(s.due, settings.limit);
   const sizeChips = LESSON_SIZES.map(
@@ -637,6 +683,19 @@ function viewDeck(id) {
       ${topicsSection}
 
       <section class="section">
+        <h2>★ Избранное <span class="count">${s.favorite}</span></h2>
+        <p class="muted small">${s.favorite
+          ? "Слова, которые для тебя сейчас важнее всего."
+          : "Отмечай важные слова звёздочкой ☆ прямо во время урока или в «Все слова» — они соберутся здесь."}</p>
+        <div class="btns">
+          <a class="btn" href="#/deck/${id}/study/favorite" ${off(s.favorite)}>Карточки</a>
+          <a class="btn" href="#/deck/${id}/game/choose/favorite" ${off(s.favorite)}>Выбери перевод</a>
+          <a class="btn" href="#/deck/${id}/game/type/favorite" ${off(s.favorite)}>Напиши слово</a>
+          ${german ? `<a class="btn" href="#/deck/${id}/game/article/favorite" ${off(s.favorite)}>der · die · das</a>` : ""}
+        </div>
+      </section>
+
+      <section class="section">
         <h2>Забытые <span class="count">${s.forgotten}</span></h2>
         <p class="muted small">Слова, на которых ты нажал «Не помню». Повтори их, пока не запомнишь.</p>
         <div class="btns">
@@ -659,6 +718,7 @@ function viewDeck(id) {
         <div class="btns">
           <a class="btn" href="#/deck/${id}/game/choose/all">Выбери перевод</a>
           <a class="btn" href="#/deck/${id}/game/type/all">Напиши слово</a>
+          ${german ? `<a class="btn" href="#/deck/${id}/game/article/all">der · die · das</a>` : ""}
         </div>
       </section>
 
@@ -740,39 +800,71 @@ die Straße - улица"></textarea>
 }
 
 // ---------------- word list ----------------
+const NEW_TOPIC = "__new__";
+
 function viewWords(id) {
   const deck = store.deck(id);
   const root = store.root(deck);
-  const canMove = store.topicsOf(root.uid).length > 0;
+  const isTopic = root !== deck;
   let filter = "all";
   let query = "";
   let selecting = false;
+  let shown = [];
   const selected = new Set();
 
+  const filters = { all: "Все", favorite: "★ Избранное", ...STATUS_NAMES };
   app.innerHTML = `
-    ${topbar("Все слова", `#/deck/${id}`, canMove ? `<button class="text-btn" id="select">Выбрать</button>` : "")}
+    ${topbar(isTopic ? `Все слова · ${deck.name}` : "Все слова", `#/deck/${id}`, `<button class="text-btn" id="select">Выбрать</button>`)}
     <div class="stack">
       <input type="search" id="q" placeholder="Поиск" aria-label="Поиск слова">
       <div class="chips" role="group" aria-label="Фильтр">
-        <button class="chip" data-f="all" aria-pressed="true">Все</button>
-        ${Object.entries(STATUS_NAMES).map(([k, v]) => `<button class="chip" data-f="${k}" aria-pressed="false">${v}</button>`).join("")}
+        ${Object.entries(filters).map(([k, v]) => `<button class="chip" data-f="${k}" aria-pressed="${k === "all"}">${v}</button>`).join("")}
       </div>
       <ul class="words" id="list"></ul>
+      ${isTopic ? `<button class="btn btn-danger btn-block" id="delete-topic">Удалить тему «${esc(deck.name)}» со всеми словами</button>` : ""}
     </div>
     <div class="move-bar" id="move-bar" hidden>
-      <span id="move-count" class="small"></span>
-      ${canMove ? topicSelect(root, root.uid, "move-to") : ""}
-      <button class="btn btn-primary" id="move">Перенести</button>
+      <div class="row">
+        <span id="move-count" class="small grow"></span>
+        <button class="text-btn" id="select-all">Выбрать все</button>
+      </div>
+      <div class="row">
+        <select id="move-to" aria-label="Куда перенести"></select>
+        <button class="btn btn-primary" id="move">Перенести</button>
+      </div>
+      <div class="row">
+        <button class="btn grow" id="fav-selected">★ В избранное</button>
+        <button class="btn btn-danger grow" id="delete-selected">Удалить</button>
+      </div>
     </div>`;
 
   const list = app.querySelector("#list");
   const bar = app.querySelector("#move-bar");
+  const moveTo = app.querySelector("#move-to");
   const topicName = (c) => (c.deck_uid !== root.uid && c.deck_uid !== id ? store.decks.find((d) => d.uid === c.deck_uid)?.name : "");
 
+  function fillTopics(selectedUid = root.uid) {
+    const opts = [root, ...store.topicsOf(root.uid)].map(
+      (d) => `<option value="${d.uid}" ${d.uid === selectedUid ? "selected" : ""}>${d === root ? `Без темы («${esc(root.name)}»)` : esc(d.name)}</option>`
+    );
+    opts.push(`<option value="${NEW_TOPIC}">＋ Новая тема…</option>`);
+    moveTo.innerHTML = opts.join("");
+  }
+  fillTopics();
+
+  function chosen() {
+    return store.cards.filter((c) => selected.has(c.uid));
+  }
+
   function draw() {
+    // Words deleted meanwhile (here or by a sync) can't stay selected.
+    const existing = new Set(store.cards.map((c) => c.uid));
+    for (const uid of selected) if (!existing.has(uid)) selected.delete(uid);
+
     const q = query.toLowerCase();
-    const shown = store.cardsIn(id)
-      .filter((c) => (filter === "all" || c.status === filter) && (!q || c.front.toLowerCase().includes(q) || c.back.toLowerCase().includes(q)))
+    shown = store.cardsIn(id)
+      .filter((c) => filter === "all" || (filter === "favorite" ? c.favorite : c.status === filter))
+      .filter((c) => !q || c.front.toLowerCase().includes(q) || c.back.toLowerCase().includes(q))
       .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
     list.innerHTML = shown.length
       ? shown.map((c) => `
@@ -780,13 +872,28 @@ function viewWords(id) {
             ${selecting ? `<span class="tick" aria-hidden="true">${selected.has(c.uid) ? "✓" : ""}</span>` : ""}
             <span class="dot ${c.status}" title="${STATUS_NAMES[c.status]}"></span>
             <span class="grow"><span class="w">${esc(c.front)}</span><br><span class="t">${esc(c.back)}</span></span>
+            ${c.favorite ? `<span class="star-mark" title="В избранном">★</span>` : ""}
             ${topicName(c) ? `<span class="tag">${esc(topicName(c))}</span>` : ""}
           </button></li>`).join("")
       : `<li class="empty muted">Ничего не найдено</li>`;
+
     bar.hidden = !selecting;
-    app.querySelector("#move-count").textContent = `Выбрано: ${selected.size}`;
-    app.querySelector("#move").disabled = !selected.size;
+    const picked = chosen();
+    app.querySelector("#move-count").textContent = `Выбрано: ${wordsCount(picked.length)}`;
+    const allShown = shown.length > 0 && shown.every((c) => selected.has(c.uid));
+    app.querySelector("#select-all").textContent = allShown ? "Снять выбор" : "Выбрать все";
+    const allFav = picked.length > 0 && picked.every((c) => c.favorite);
+    app.querySelector("#fav-selected").textContent = allFav ? "☆ Убрать из избранного" : "★ В избранное";
+    for (const b of ["#move", "#fav-selected", "#delete-selected"]) app.querySelector(b).disabled = !picked.length;
   }
+
+  function stopSelecting() {
+    selecting = false;
+    selected.clear();
+    app.querySelector("#select").textContent = "Выбрать";
+    draw();
+  }
+
   draw();
 
   app.querySelector("#q").addEventListener("input", (e) => { query = e.target.value.trim(); draw(); });
@@ -797,22 +904,58 @@ function viewWords(id) {
       draw();
     })
   );
-  app.querySelector("#select")?.addEventListener("click", (e) => {
-    selecting = !selecting;
-    selected.clear();
-    e.target.textContent = selecting ? "Отмена" : "Выбрать";
+  app.querySelector("#select").addEventListener("click", (e) => {
+    if (selecting) { stopSelecting(); return; }
+    selecting = true;
+    e.target.textContent = "Отмена";
     draw();
   });
-  app.querySelector("#move").addEventListener("click", () => {
-    const to = app.querySelector("#move-to").value;
-    const moves = store.cards.filter((c) => selected.has(c.uid) && c.deck_uid !== to).map((c) => moveOp(c, to));
-    if (moves.length) store.commit(...moves);
-    toast(`Перенесено в «${store.deck(to).name}»: ${wordsCount(moves.length)}`);
-    selecting = false;
-    selected.clear();
-    app.querySelector("#select").textContent = "Выбрать";
+  app.querySelector("#select-all").addEventListener("click", () => {
+    const allShown = shown.every((c) => selected.has(c.uid));
+    for (const c of shown) allShown ? selected.delete(c.uid) : selected.add(c.uid);
     draw();
   });
+
+  app.querySelector("#move").addEventListener("click", async () => {
+    const picked = chosen();
+    if (!picked.length) return;
+    let to = moveTo.value;
+    const changes = [];
+    if (to === NEW_TOPIC) {
+      const name = await askName(`Новая тема в «${root.name}»`, "Кошки");
+      if (!name) { fillTopics(); return; }
+      const topic = newTopicOp(root, name);
+      changes.push(topic);
+      to = topic.uid;
+    }
+    changes.push(...picked.filter((c) => c.deck_uid !== to).map((c) => moveOp(c, to)));
+    if (changes.length) store.commit(...changes);
+    toast(`Перенесено в «${store.deck(to).name}»: ${wordsCount(picked.length)}`);
+    fillTopics();
+    stopSelecting();
+  });
+
+  app.querySelector("#fav-selected").addEventListener("click", () => {
+    const picked = chosen();
+    const favorite = !picked.every((c) => c.favorite);
+    const changes = picked.filter((c) => !!c.favorite !== favorite).map((c) => ({ type: "card_favorite", uid: c.uid, favorite }));
+    if (changes.length) store.commit(...changes);
+    toast(favorite ? `В избранном: ${wordsCount(picked.length)}` : `Убрано из избранного: ${wordsCount(picked.length)}`);
+    stopSelecting();
+  });
+
+  app.querySelector("#delete-selected").addEventListener("click", () => {
+    const picked = chosen();
+    if (!picked.length) return;
+    const names = picked.slice(0, 5).map((c) => c.front).join(", ") + (picked.length > 5 ? "…" : "");
+    if (!confirm(`Удалить ${wordsCount(picked.length)}? (${names})\nЭто нельзя отменить.`)) return;
+    store.commit(...picked.map((c) => ({ type: "card_delete", uid: c.uid })));
+    toast(`Удалено: ${wordsCount(picked.length)}`);
+    stopSelecting();
+  });
+
+  app.querySelector("#delete-topic")?.addEventListener("click", () => deleteTopicWithWords(deck, root));
+
   list.addEventListener("click", (e) => {
     const row = e.target.closest(".word-row");
     const card = row && store.cards.find((c) => c.uid === row.dataset.uid);
@@ -838,6 +981,9 @@ function editDialog(card, onChange) {
       <div><label for="ex">Пример</label><textarea id="ex" class="short" maxlength="1000">${esc(card.example || "")}</textarea></div>
       <div><label for="ext">Перевод примера</label><textarea id="ext" class="short" maxlength="1000">${esc(card.example_translation || "")}</textarea></div>
       ${store.topicsOf(root.uid).length ? `<div><label for="topic">Тема</label>${topicSelect(root, card.deck_uid)}</div>` : ""}
+      <label class="row" style="font-weight:500;cursor:pointer">
+        <input type="checkbox" id="fav" style="width:20px;min-height:20px" ${card.favorite ? "checked" : ""}> ★ В избранном
+      </label>
       <p class="small muted">${STATUS_NAMES[card.status]} · вспомнил ${card.times_correct}, забыл ${card.times_wrong}</p>
       <div class="dialog-btns">
         <button class="btn" value="cancel" formnovalidate>Отмена</button>
@@ -854,14 +1000,17 @@ function editDialog(card, onChange) {
     const v = (sel) => dlg.querySelector(sel).value.trim();
     const values = { front: v("#f"), back: v("#b"), example: v("#ex") || null, example_translation: v("#ext") || null };
     const deckUid = dlg.querySelector("#topic")?.value || card.deck_uid;
+    const favorite = dlg.querySelector("#fav").checked;
     dlg.remove();
     if (action === "save" && values.front && values.back) {
-      store.commit({ type: "card_upsert", uid: card.uid, deck_uid: deckUid, ...values });
+      const changes = [{ type: "card_upsert", uid: card.uid, deck_uid: deckUid, ...values }];
+      if (favorite !== !!card.favorite) changes.push({ type: "card_favorite", uid: card.uid, favorite });
+      store.commit(...changes);
       toast("Сохранено");
     } else if (action === "reset") {
       store.commit({ type: "card_reset", uid: card.uid });
       toast("Слово снова новое");
-    } else if (action === "delete" && confirm(`Удалить «${card.front}»?`)) {
+    } else if (action === "delete" && confirm(`Удалить слово «${card.front}»? Это нельзя отменить.`)) {
       store.commit({ type: "card_delete", uid: card.uid });
       toast("Слово удалено");
     } else return;
@@ -871,7 +1020,7 @@ function editDialog(card, onChange) {
 }
 
 // ---------------- lesson with cards ----------------
-const LESSON_TITLES = { due: "Урок", forgotten: "Забытые слова", learned: "Выученные слова", all: "Все слова" };
+const LESSON_TITLES = { due: "Урок", forgotten: "Забытые слова", learned: "Выученные слова", favorite: "Избранное", all: "Все слова" };
 
 function viewStudy(id, mode) {
   const deck = store.deck(id);
@@ -895,6 +1044,8 @@ function viewStudy(id, mode) {
       <a class="icon-btn" href="#/deck/${id}" aria-label="Закончить урок">✕</a>
       <div class="progress"><span id="prog" style="width:0"></span></div>
       <span class="small muted" id="counter"></span>
+      <button class="icon-btn star-btn" id="fav" aria-pressed="false" aria-label="В избранное">☆</button>
+      <button class="icon-btn" id="del" aria-label="Удалить слово">🗑</button>
     </div>
     <div class="card-scene"><div class="card" id="card" tabindex="0" aria-label="Карточка, нажми чтобы перевернуть"></div></div>
     <div class="answer-btns">
@@ -930,6 +1081,40 @@ function viewStudy(id, mode) {
       </div>`;
     app.querySelector("#counter").textContent = `${Math.min(pos + 1, queue.length)} / ${queue.length}`;
     app.querySelector("#prog").style.width = `${(pos / queue.length) * 100}%`;
+    drawStar();
+  }
+
+  function drawStar() {
+    const on = !!queue[pos].favorite;
+    const btn = app.querySelector("#fav");
+    btn.textContent = on ? "★" : "☆";
+    btn.setAttribute("aria-pressed", on);
+    btn.setAttribute("aria-label", on ? "Убрать из избранного" : "В избранное");
+  }
+
+  function toggleFavorite() {
+    const c = queue[pos];
+    const favorite = !c.favorite;
+    for (const q of queue) if (q.uid === c.uid) q.favorite = favorite; // the word can be in the queue twice
+    store.commit({ type: "card_favorite", uid: c.uid, favorite });
+    drawStar();
+    toast(favorite ? "★ Добавлено в избранное" : "Убрано из избранного");
+  }
+
+  function deleteCurrent() {
+    if (busy) return;
+    const c = queue[pos];
+    if (!confirm(`Удалить слово «${c.front}»? Это нельзя отменить.`)) return;
+    store.commit({ type: "card_delete", uid: c.uid });
+    firstAnswer.delete(c.uid);
+    // Take it out of the rest of the lesson too (a forgotten word comes back later).
+    for (let i = queue.length - 1; i >= pos; i--) if (queue[i].uid === c.uid) queue.splice(i, 1);
+    toast("Слово удалено");
+    if (pos >= queue.length) { finish(); return; }
+    cardEl.style.transition = "none";
+    render();
+    void cardEl.offsetWidth;
+    cardEl.style.transition = "";
   }
 
   function flip() { if (!busy) cardEl.classList.toggle("flipped"); }
@@ -964,6 +1149,7 @@ function viewStudy(id, mode) {
 
   function finish() {
     const answers = [...firstAnswer.values()];
+    if (!answers.length) { location.hash = `#/deck/${id}`; return; }
     const knew = answers.filter(Boolean).length;
     app.innerHTML = `
       <section class="summary stack">
@@ -975,6 +1161,8 @@ function viewStudy(id, mode) {
   }
 
   app.querySelector("#flip").onclick = flip;
+  app.querySelector("#fav").onclick = toggleFavorite;
+  app.querySelector("#del").onclick = deleteCurrent;
   app.querySelector("#know").onclick = () => answer(true);
   app.querySelector("#forgot").onclick = () => answer(false);
   cardEl.addEventListener("click", (e) => {
@@ -1007,7 +1195,9 @@ function viewGame(id, type, mode) {
   const all = store.cardsIn(id).map((c) => ({ ...c }));
   // Wrong answers to choose from: the whole language, so a small topic still works.
   const distractors = store.cardsIn(store.root(deck).uid);
-  const pool = mode === "forgotten" ? all.filter((c) => c.status === "forgotten") : all;
+  const pool = mode === "forgotten" ? all.filter((c) => c.status === "forgotten")
+    : mode === "favorite" ? all.filter((c) => c.favorite)
+    : all;
   const title = type === "choose" ? "Выбери перевод" : "Напиши слово";
   const back = `#/deck/${id}`;
 
@@ -1135,6 +1325,139 @@ function viewGame(id, type, mode) {
 
   const draw = type === "choose" ? drawChoose : drawType;
   draw();
+}
+
+// ---------------- game: der, die or das ----------------
+function viewArticles(id, mode) {
+  const deck = store.deck(id);
+  const lang = store.lang(deck);
+  const back = `#/deck/${id}`;
+  const nouns = store.cardsIn(id)
+    .filter((c) => mode !== "favorite" || c.favorite)
+    .map((c) => ({ ...c, art: WC.splitArticle(c.front) }))
+    .filter((c) => c.art);
+
+  if (!nouns.length) {
+    app.innerHTML = `${topbar("der · die · das", back)}<div class="empty stack">
+      <p>Для этой игры нужны существительные с артиклем, например «der Hund» или «die Katze».</p>
+      <a class="btn" href="${back}">К папке</a></div>`;
+    return;
+  }
+
+  const queue = WC.shuffle(nouns).slice(0, settings.limit);
+  const firstAnswer = new Map();
+  const repeats = new Map();
+  let pos = 0;
+  let locked = false;
+
+  app.innerHTML = `
+    <div class="lesson-top">
+      <a class="icon-btn" href="${back}" aria-label="Закончить игру">✕</a>
+      <div class="progress"><span id="prog" style="width:0"></span></div>
+      <span class="small muted" id="counter"></span>
+    </div>
+    <p class="small muted center">Перетащи слово на правильный артикль — или просто нажми на артикль.</p>
+    <div class="art-stage">
+      <div class="art-card" id="art-card" role="img"></div>
+    </div>
+    <div class="art-zones">
+      ${WC.ARTICLES.map((a) => `<button class="art-zone art-${a}" data-art="${a}">${a}</button>`).join("")}
+    </div>
+    <p class="type-feedback" id="fb"></p>`;
+
+  const cardEl = app.querySelector("#art-card");
+  const fb = app.querySelector("#fb");
+
+  function render() {
+    const c = queue[pos];
+    cardEl.innerHTML = `${repeats.get(c.uid) ? `<span class="card-tag">ещё раз</span>` : ""}
+      <p class="card-word">${esc(c.art.noun)}</p><p class="card-sub">${esc(c.back)}</p>`;
+    cardEl.className = "art-card";
+    cardEl.style.transform = "";
+    fb.innerHTML = "";
+    app.querySelectorAll(".art-zone").forEach((z) => z.classList.remove("correct", "wrong", "hover"));
+    app.querySelector("#counter").textContent = `${pos + 1} / ${queue.length}`;
+    app.querySelector("#prog").style.width = `${(pos / queue.length) * 100}%`;
+  }
+
+  async function choose(article) {
+    if (locked) return;
+    locked = true;
+    const c = queue[pos];
+    const ok = article === c.art.article;
+    app.querySelectorAll(".art-zone").forEach((z) => {
+      if (z.dataset.art === c.art.article) z.classList.add("correct");
+      else if (z.dataset.art === article) z.classList.add("wrong");
+    });
+    cardEl.classList.add(ok ? "result-know" : "result-forgot");
+    fb.innerHTML = ok
+      ? `<span class="right">Верно: ${esc(c.front)}</span>`
+      : `<span class="wrong">Правильно: ${esc(c.front)}</span>`;
+    if (lang) speak(c.front, lang);
+    if (!firstAnswer.has(c.uid)) firstAnswer.set(c.uid, ok);
+    if (!ok && (repeats.get(c.uid) || 0) < MAX_REPEATS) {
+      repeats.set(c.uid, (repeats.get(c.uid) || 0) + 1);
+      requeue(queue, pos, c);
+    }
+    await sleep(ok ? 900 : 2000);
+    if (currentView !== "game") return;
+    pos += 1;
+    locked = false;
+    if (pos >= queue.length) { finish(); return; }
+    render();
+  }
+
+  function finish() {
+    const answers = [...firstAnswer.values()];
+    const right = answers.filter(Boolean).length;
+    app.innerHTML = `
+      <section class="summary stack">
+        <p class="big">${right} / ${answers.length}</p>
+        <p class="muted">правильных артиклей с первой попытки</p>
+        <a class="btn btn-primary btn-block" href="${location.hash}" id="again">Сыграть ещё</a>
+        <a class="btn btn-block" href="${back}">К папке</a>
+      </section>`;
+    app.querySelector("#again").onclick = (e) => { e.preventDefault(); router(); };
+  }
+
+  // Drag the word with a finger or the mouse; drop it on a zone.
+  let drag = null;
+  const zoneAt = (x, y) => document.elementsFromPoint(x, y).find((el) => el.classList?.contains("art-zone"));
+  cardEl.addEventListener("pointerdown", (e) => {
+    if (locked) return;
+    drag = { x: e.clientX, y: e.clientY };
+    cardEl.setPointerCapture(e.pointerId);
+    cardEl.classList.add("dragging");
+  });
+  cardEl.addEventListener("pointermove", (e) => {
+    if (!drag) return;
+    cardEl.style.transform = `translate(${e.clientX - drag.x}px, ${e.clientY - drag.y}px) scale(0.92)`;
+    const zone = zoneAt(e.clientX, e.clientY);
+    app.querySelectorAll(".art-zone").forEach((z) => z.classList.toggle("hover", z === zone));
+  });
+  const drop = (e) => {
+    if (!drag) return;
+    drag = null;
+    cardEl.classList.remove("dragging");
+    const zone = e.type === "pointerup" ? zoneAt(e.clientX, e.clientY) : null;
+    app.querySelectorAll(".art-zone").forEach((z) => z.classList.remove("hover"));
+    cardEl.style.transform = "";
+    if (zone) choose(zone.dataset.art);
+  };
+  cardEl.addEventListener("pointerup", drop);
+  cardEl.addEventListener("pointercancel", drop);
+  app.querySelector(".art-zones").addEventListener("click", (e) => {
+    const zone = e.target.closest(".art-zone");
+    if (zone) choose(zone.dataset.art);
+  });
+  const onKey = (e) => {
+    const i = ["1", "2", "3"].indexOf(e.key);
+    if (i !== -1) choose(WC.ARTICLES[i]);
+  };
+  document.addEventListener("keydown", onKey);
+  cleanup = () => document.removeEventListener("keydown", onKey);
+
+  render();
 }
 
 // ---------------- start ----------------

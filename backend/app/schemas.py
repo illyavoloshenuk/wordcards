@@ -105,7 +105,7 @@ StudyMode = Literal["due", "forgotten", "learned", "all"]
 
 
 # ---- sync (offline mode) ----
-OpType = Literal["deck_upsert", "deck_delete", "card_upsert", "card_delete", "card_review", "card_reset"]
+OpType = Literal["deck_upsert", "deck_delete", "card_upsert", "card_delete", "card_review", "card_reset", "card_favorite"]
 
 
 class SyncOp(BaseModel):
@@ -124,6 +124,7 @@ class SyncOp(BaseModel):
     example: str | None = Field(default=None, max_length=1000)
     example_translation: str | None = Field(default=None, max_length=1000)
     known: bool | None = None
+    favorite: bool | None = None  # for card_favorite
 
 
 class SyncIn(BaseModel):
@@ -153,6 +154,7 @@ class SyncCard(BaseModel):
     times_correct: int
     times_wrong: int
     created_at: str
+    favorite: bool = False
 
 
 class RejectedOp(BaseModel):

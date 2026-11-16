@@ -173,6 +173,13 @@ def apply_op(db: Session, user: User, op: SyncOp, now: datetime) -> None:
         if card is not None:
             card.box, card.status, card.due_at = 0, srs.NEW, at
 
+    elif op.type == "card_favorite":
+        if op.favorite is None:
+            raise OpError("favorite is missing")
+        card = find_card(db, user, op.uid)
+        if card is not None:
+            card.favorite = op.favorite
+
 
 def deck_out(d: Deck) -> SyncDeck:
     return SyncDeck(uid=d.uid, parent_uid=d.parent_uid, name=d.name, lang_code=d.lang_code, created_at=iso(d.created_at))
@@ -183,6 +190,7 @@ def card_out(c: Card, deck_uid: str) -> SyncCard:
         uid=c.uid, deck_uid=deck_uid, front=c.front, back=c.back, example=c.example,
         example_translation=c.example_translation, box=c.box, status=c.status, due_at=iso(c.due_at),
         times_correct=c.times_correct, times_wrong=c.times_wrong, created_at=iso(c.created_at),
+        favorite=bool(c.favorite),
     )
 
 

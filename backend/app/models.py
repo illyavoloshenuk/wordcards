@@ -2,7 +2,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .database import Base
@@ -62,6 +62,8 @@ class Card(Base):
     back: Mapped[str] = mapped_column(String(200))  # translation
     example: Mapped[str | None] = mapped_column(Text, nullable=True)
     example_translation: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Marked with a star: words the user wants to learn first.
+    favorite: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=False)
 
     # Spaced-repetition state, see srs.py
     box: Mapped[int] = mapped_column(Integer, default=0)

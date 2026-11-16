@@ -124,7 +124,7 @@
         } else if (state.decks.some((d) => d.uid === op.deck_uid)) {
           state.cards.push({
             uid: op.uid, deck_uid: op.deck_uid, ...content,
-            box: 0, status: "new", due_at: op.at, times_correct: 0, times_wrong: 0, created_at: op.at,
+            box: 0, status: "new", due_at: op.at, times_correct: 0, times_wrong: 0, created_at: op.at, favorite: false,
           });
         }
         break;
@@ -141,6 +141,9 @@
         break;
       case "card_reset":
         if (card) Object.assign(card, { box: 0, status: "new", due_at: op.at });
+        break;
+      case "card_favorite":
+        if (card) card.favorite = !!op.favorite;
         break;
     }
   }
@@ -179,11 +182,12 @@
 
   function deckStats(cards, deckUids, now = Date.now()) {
     const scope = asSet(deckUids);
-    const s = { total: 0, new: 0, learning: 0, forgotten: 0, learned: 0, due: 0 };
+    const s = { total: 0, new: 0, learning: 0, forgotten: 0, learned: 0, due: 0, favorite: 0 };
     for (const c of cards) {
       if (!scope.has(c.deck_uid)) continue;
       s.total += 1;
       s[c.status] += 1;
+      if (c.favorite) s.favorite += 1;
       if (Date.parse(c.due_at) <= now) s.due += 1;
     }
     return s;
@@ -204,6 +208,7 @@
       due        words whose time has come; forgotten ones are picked first, then learning, then new
       forgotten  only forgotten words
       learned    only learned words
+      favorite   only words marked with a star
       all        every word */
   function studyCards(cards, deckUids, mode, limit, now = Date.now()) {
     const scope = asSet(deckUids);
@@ -215,7 +220,10 @@
         .sort((a, b) => PRIORITY[a.status] - PRIORITY[b.status]);
       return shuffle(urgent.slice(0, limit));
     }
-    const picked = mode === "forgotten" || mode === "learned" ? own.filter((c) => c.status === mode) : own;
+    const picked =
+      mode === "favorite" ? own.filter((c) => c.favorite)
+      : mode === "forgotten" || mode === "learned" ? own.filter((c) => c.status === mode)
+      : own;
     return shuffle(picked).slice(0, limit);
   }
 
@@ -287,6 +295,16 @@
     return close ? "close" : "wrong";
   }
 
+  // ---------- German articles ----------
+  const ARTICLES = ["der", "die", "das"];
+
+  /** "der Hund" -> { article: "der", noun: "Hund" }; a word without der/die/das -> null.
+      "die Straße, -n" keeps the plural note: noun "Straße, -n". */
+  function splitArticle(front) {
+    const m = String(front).trim().match(/^(der|die|das)\s+(\S.*)$/i);
+    return m ? { article: m[1].toLowerCase(), noun: m[2] } : null;
+  }
+
   function uuid() {
     if (root.crypto && typeof root.crypto.randomUUID === "function") return root.crypto.randomUUID();
     // Fallback for pages opened over plain http (randomUUID needs https).
@@ -300,7 +318,7 @@
 
   const api = {
     review, parseWordList, applyOp, mergeChanges, withPending, scopeUids, deckStats, studyCards, checkAnswer,
-    shuffle, uuid, INTERVAL_DAYS,
+    shuffle, uuid, splitArticle, INTERVAL_DAYS, ARTICLES,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.WC = api;
